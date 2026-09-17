@@ -67,6 +67,24 @@ Run:
 - `cd frontend && npm run lint`
 - `cd frontend && npm run build`
 
+### 5,000 virtual bidder demo
+
+Install k6, keep the backend running, then run:
+
+`k6 run load-tests/auction-load.js`
+
+The scenario ramps to 5,000 virtual users. These are simulated API clients, not 5,000 physical browser users. During the run, open `/api/metrics` or the frontend metrics cards to show measured request and bid volume.
+
+To test the deployed backend, set its URL:
+
+`k6 run -e BASE_URL=https://your-backend.onrender.com load-tests/auction-load.js`
+
+For the complete judge demonstration, run the combined bidder and observer scenario:
+
+`k6 run -e BASE_URL=https://your-backend.onrender.com load-tests/judge-demo.js`
+
+This runs 5,000 virtual bidding clients and two observer clients at the same time. Separately open the frontend in two browser tabs, select the same auction, and place a bid in one tab. Both real tabs should update through SSE while k6 drives the backend traffic.
+
 ## Notes
 
 This implementation is designed to be transparent and demo-friendly while still reflecting production-grade auction semantics. The backend is intentionally simple to reason about and extend, and the PostgreSQL schema provides the foundation for a fuller production deployment.

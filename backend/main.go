@@ -56,12 +56,13 @@ type BidRequest struct {
 }
 
 type CreateAuctionRequest struct {
-	Title         string `json:"title"`
-	Description   string `json:"description"`
-	Category      string `json:"category"`
-	ImageURL      string `json:"image_url"`
-	StartingPrice int64  `json:"starting_price"`
-	DurationHours int    `json:"duration_hours"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	Category        string `json:"category"`
+	ImageURL        string `json:"image_url"`
+	StartingPrice   int64  `json:"starting_price"`
+	DurationMinutes int    `json:"duration_minutes"`
+	DurationHours   int    `json:"duration_hours"`
 }
 
 type Acknowledge struct {
@@ -88,6 +89,8 @@ type Store struct {
 	clients     map[chan string]struct{}
 	idempotency map[string]Acknowledge
 	nextBidID   int64
+	requests    int64
+	rejected    int64
 }
 
 func newStore() *Store {
@@ -157,12 +160,30 @@ func (s *Store) minimumNextBid(current int64) int64 {
 func (s *Store) listAuctions() []Auction {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.requests++
 	out := make([]Auction, 0, len(s.auctions))
 	for _, a := range s.auctions {
-		out = append(out, cloneAuction(*a))
+		updated := normalizeAuctionStatus(a)
+		out = append(out, cloneAuction(*updated))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].EndsAt.Before(out[j].EndsAt) })
 	return out
+}
+
+func normalizeAuctionStatus(a *Auction) *Auction {
+	if a == nil {
+		return &Auction{}
+	}
+	if time.Now().UTC().After(a.EndsAt) {
+		a.Status = AuctionStatusEnded
+		return a
+	}
+	if time.Now().UTC().Before(a.StartsAt) {
+		a.Status = AuctionStatusUpcoming
+		return a
+	}
+	a.Status = AuctionStatusActive
+	return a
 }
 
 func (s *Store) getAuction(id int) (Auction, bool) {
@@ -172,7 +193,8 @@ func (s *Store) getAuction(id int) (Auction, bool) {
 	if !ok {
 		return Auction{}, false
 	}
-	return cloneAuction(*a), true
+	updated := normalizeAuctionStatus(a)
+	return cloneAuction(*updated), true
 }
 
 func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
@@ -185,8 +207,13 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 	if req.StartingPrice <= 0 {
 		return Auction{}, errors.New("starting price must be positive")
 	}
-	if req.DurationHours <= 0 || req.DurationHours > 168 {
-		return Auction{}, errors.New("duration must be between 1 and 168 hours")
+
+	durationMinutes := req.DurationMinutes
+	if durationMinutes <= 0 && req.DurationHours > 0 {
+		durationMinutes = req.DurationHours * 60
+	}
+	if durationMinutes < 10 || durationMinutes > 7*24*60 {
+		return Auction{}, errors.New("duration must be at least 10 minutes and no more than 7 days")
 	}
 
 	s.mu.Lock()
@@ -210,7 +237,7 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 		CurrentBid:    req.StartingPrice,
 		Status:        AuctionStatusActive,
 		StartsAt:      now,
-		EndsAt:        now.Add(time.Duration(req.DurationHours) * time.Hour),
+		EndsAt:        now.Add(time.Duration(durationMinutes) * time.Minute),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -271,16 +298,19 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 	if !ok {
 		return Acknowledge{}, errors.New("auction not found")
 	}
+	a = normalizeAuctionStatus(a)
+	if a.Status != AuctionStatusActive {
+		s.rejected++
+		return Acknowledge{Accepted: false, Message: "Auction is not active.", CurrentBid: a.CurrentBid, AuctionID: a.ID}, nil
+	}
 	if req.Amount < s.minimumNextBid(a.CurrentBid) {
+		s.rejected++
 		return Acknowledge{Accepted: false, Message: "Bid too low.", CurrentBid: a.CurrentBid, MinimumNext: s.minimumNextBid(a.CurrentBid), AuctionID: a.ID}, nil
 	}
 	if time.Now().UTC().After(a.EndsAt) || a.Status == AuctionStatusEnded {
+		s.rejected++
 		return Acknowledge{Accepted: false, Message: "Auction closed.", CurrentBid: a.CurrentBid, AuctionID: a.ID}, nil
 	}
-	if a.Status != AuctionStatusActive {
-		return Acknowledge{Accepted: false, Message: "Auction is not active.", CurrentBid: a.CurrentBid, AuctionID: a.ID}, nil
-	}
-
 	s.nextBidID++
 	bid := Bid{
 		ID:        s.nextBidID,
@@ -350,11 +380,21 @@ func (s *Store) unsubscribe(ch chan string) {
 func (s *Store) getMetrics() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var totalAmount int64
+	for _, bid := range s.bids {
+		totalAmount += bid.Amount
+	}
+	averageBid := int64(0)
+	if len(s.bids) > 0 {
+		averageBid = totalAmount / int64(len(s.bids))
+	}
 	return map[string]any{
 		"active_auctions": len(s.auctions),
+		"total_requests":  s.requests,
 		"total_bids":      len(s.bids),
 		"successful_bids": len(s.bids),
-		"average_bid":     0,
+		"rejected_bids":   s.rejected,
+		"average_bid":     averageBid,
 		"connections":     len(s.clients),
 	}
 }

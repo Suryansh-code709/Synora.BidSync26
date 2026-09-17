@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Auction = {
   id: number;
@@ -41,9 +41,18 @@ type AuctionForm = {
   description: string;
   category: string;
   starting_price: string;
-  duration_hours: string;
+  duration_minutes: string;
   image_url: string;
 };
+
+type Metrics = {
+  total_requests: number;
+  successful_bids: number;
+  rejected_bids: number;
+  connections: number;
+};
+
+type DemoMode = "manual" | "stress";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -53,6 +62,8 @@ const formatMoney = (value: number) =>
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(value);
+
+const formatBidLabel = (value: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value)}`;
 
 const formatRelativeTime = (date: string) => {
   const diff = new Date(date).getTime() - Date.now();
@@ -78,15 +89,42 @@ export default function Home() {
   const [liveBids, setLiveBids] = useState<LiveBid[]>([]);
   const [liveClock, setLiveClock] = useState(() => Date.now());
   const [showSellerForm, setShowSellerForm] = useState(false);
-  const [auctionForm, setAuctionForm] = useState<AuctionForm>({ title: "", description: "", category: "", starting_price: "", duration_hours: "24", image_url: "" });
+  const [auctionForm, setAuctionForm] = useState<AuctionForm>({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "" });
   const [isPublishing, setIsPublishing] = useState(false);
-  const [stats] = useState({ requests: 212, successful: 74, rejected: 11, latency: 120, users: 38 });
+  const [stats, setStats] = useState<Metrics>({ total_requests: 0, successful_bids: 0, rejected_bids: 0, connections: 0 });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [demoMode, setDemoMode] = useState<DemoMode>("manual");
+  const demoModeRef = useRef<DemoMode>("manual");
+  const selectedIdRef = useRef<number>(selectedId);
 
   const selectedAuction = useMemo(
     () => auctions.find((auction) => auction.id === selectedId) ?? auctions[0],
     [auctions, selectedId],
   );
+
+  useEffect(() => {
+    demoModeRef.current = demoMode;
+  }, [demoMode]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  const syncLiveBidFromAuction = (auction: Auction, bidOverride?: { id?: number | string; amount?: number; bidder?: string }) => {
+    if (!auction?.current_bidder || !auction?.current_bid) return;
+
+    const liveBid: LiveBid = {
+      id: String(bidOverride?.id ?? `${auction.id}:${auction.current_bid}`),
+      amount: bidOverride?.amount ?? auction.current_bid,
+      bidder: bidOverride?.bidder ?? auction.current_bidder,
+      createdAt: Date.now(),
+    };
+
+    setLiveBids((prev) => [
+      liveBid,
+      ...prev.filter((item) => item.id !== liveBid.id),
+    ].slice(0, 4));
+  };
 
   const fetchAuctions = async () => {
     try {
@@ -94,11 +132,40 @@ export default function Home() {
       const data = await response.json();
       if (Array.isArray(data) && data.length > 0) {
         setAuctions(data);
-        setSelectedId((prev) => (data.some((item) => item.id === prev) ? prev : data[0].id));
+        const currentSelectedId = selectedIdRef.current;
+        const nextSelectedId = data.some((item) => item.id === currentSelectedId) ? currentSelectedId : data[0].id;
+        setSelectedId(nextSelectedId);
+
+        const latestAuction = data.find((item) => item.id === nextSelectedId) ?? data[0];
+        if (latestAuction?.current_bidder) {
+          syncLiveBidFromAuction(latestAuction);
+        }
       }
     } catch {
       setConnected(false);
     }
+  };
+
+  const fetchMetrics = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/metrics`);
+      if (response.ok) setStats((await response.json()) as Metrics);
+    } catch {
+      // Metrics are supplementary to the auction experience.
+    }
+  };
+
+  const handleDeviceImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (result) {
+        setAuctionForm((prev) => ({ ...prev, image_url: result }));
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   useEffect(() => {
@@ -109,7 +176,13 @@ export default function Home() {
       if (!isMounted) return;
     };
 
+    const loadMetrics = async () => {
+      await fetchMetrics();
+      if (!isMounted) return;
+    };
+
     void loadAuctions();
+    void loadMetrics();
 
     const eventSource = new EventSource(`${API_URL}/api/stream`);
     eventSource.onopen = () => setConnected(true);
@@ -131,8 +204,12 @@ export default function Home() {
               },
               ...prev.filter((bid) => bid.id !== String(payload.bid.id)),
             ].slice(0, 4));
+          } else if (payload.auction.current_bidder && payload.auction.current_bid) {
+            syncLiveBidFromAuction(payload.auction);
           }
-          setMessage({ type: "success", text: `Live update: ${payload.auction.title} moved to ${formatMoney(payload.auction.current_bid)}.` });
+          if (demoModeRef.current === "stress") {
+            setMessage({ type: "success", text: `Live update: ${payload.auction.title} moved to ${formatMoney(payload.auction.current_bid)}.` });
+          }
         }
       } catch {
         // ignore malformed SSE payloads in demo mode
@@ -141,7 +218,29 @@ export default function Home() {
 
     const interval = setInterval(() => {
       setLiveClock(Date.now());
-      void fetchAuctions();
+      if (demoModeRef.current === "stress") {
+        setAuctions((prev) => {
+          if (prev.length === 0) return prev;
+          const target = prev.find((auction) => auction.id === selectedIdRef.current) ?? prev[0];
+          const nextBid = target.current_bid + 1000;
+          const nextListing: Auction = {
+            ...target,
+            current_bid: nextBid,
+            current_bidder: "Market Simulator",
+            bid_count: (target.bid_count ?? 0) + 1,
+            status: "active",
+          };
+          setLiveBids((live) => [
+            { id: `stress_${Date.now()}`, amount: nextBid, bidder: "Market Simulator", createdAt: Date.now() },
+            ...live,
+          ].slice(0, 4));
+          return prev.map((auction) => (auction.id === target.id ? nextListing : auction));
+        });
+        setMessage({ type: "success", text: "Market stress mode: bids are moving automatically from the 5,000-user simulation." });
+      } else {
+        void fetchAuctions();
+      }
+      void fetchMetrics();
     }, 3500);
 
     return () => {
@@ -207,7 +306,7 @@ export default function Home() {
         body: JSON.stringify({
           ...auctionForm,
           starting_price: Number(auctionForm.starting_price),
-          duration_hours: Number(auctionForm.duration_hours),
+          duration_minutes: Number(auctionForm.duration_minutes),
         }),
       });
       const responseText = await response.text();
@@ -222,7 +321,7 @@ export default function Home() {
       }
       setAuctions((prev) => [...prev, data]);
       setSelectedId(data.id);
-      setAuctionForm({ title: "", description: "", category: "", starting_price: "", duration_hours: "24", image_url: "" });
+      setAuctionForm({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "" });
       setShowSellerForm(false);
       setMessage({ type: "success", text: `Auction published: ${data.title}` });
     } catch (error) {
@@ -263,7 +362,22 @@ export default function Home() {
             <p className="text-xs uppercase tracking-[0.35em] text-cyan-300">Synora</p>
             <h1 className="mt-2 text-3xl font-semibold">Live auction market</h1>
           </div>
-          <div className="flex items-center gap-3 text-sm text-slate-300">
+          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
+            <div className="inline-flex rounded-full border border-white/10 bg-slate-900/80 p-1">
+              {[
+                { id: "manual", label: "Normal mode" },
+                { id: "stress", label: "5,000-user demo" },
+              ].map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => setDemoMode(mode.id as DemoMode)}
+                  className={`rounded-full px-3 py-1.5 transition ${demoMode === mode.id ? "bg-cyan-500 text-slate-950" : "text-slate-300 hover:bg-white/5"}`}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
             <button type="button" onClick={() => setShowSellerForm((open) => !open)} className="rounded-full border border-cyan-400/40 px-3 py-1 text-cyan-200 hover:bg-cyan-400/10">
               {showSellerForm ? "Close seller form" : "List an item"}
             </button>
@@ -271,7 +385,7 @@ export default function Home() {
               <span className={`h-2.5 w-2.5 rounded-full ${connected ? "bg-emerald-400" : "bg-rose-400"}`} />
               {connected ? "Realtime connected" : "Reconnect in progress"}
             </span>
-            <span className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1">{stats.users} active bidders</span>
+            <span className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1">{stats.connections} live connections</span>
           </div>
         </header>
 
@@ -286,14 +400,29 @@ export default function Home() {
                 ["title", "Item title", "text"],
                 ["category", "Category", "text"],
                 ["starting_price", "Starting price (INR)", "number"],
-                ["duration_hours", "Duration in hours", "number"],
-                ["image_url", "Public image URL (optional)", "url"],
+                ["duration_minutes", "Duration in minutes (minimum 10)", "number"],
               ] as const).map(([field, placeholder, type]) => (
-                <input key={field} required={field !== "image_url"} value={auctionForm[field]} type={type} min={type === "number" ? 1 : undefined} placeholder={placeholder} onChange={(event) => setAuctionForm((prev) => ({ ...prev, [field]: event.target.value }))} className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2" />
+                <input key={field} required value={auctionForm[field]} type={type} min={field === "duration_minutes" ? 10 : 1} placeholder={placeholder} onChange={(event) => setAuctionForm((prev) => ({ ...prev, [field]: event.target.value }))} className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2" />
               ))}
+              <div className="space-y-2 md:col-span-2">
+                <label className="block text-sm text-slate-300">Image source</label>
+                <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+                  <input
+                    value={auctionForm.image_url}
+                    type="url"
+                    placeholder="Public image URL (optional)"
+                    onChange={(event) => setAuctionForm((prev) => ({ ...prev, image_url: event.target.value }))}
+                    className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500"
+                  />
+                  <label className="cursor-pointer rounded-xl border border-cyan-400/40 bg-cyan-500/10 px-4 py-3 text-sm font-medium text-cyan-200 hover:bg-cyan-500/20">
+                    Upload from device
+                    <input type="file" accept="image/*" onChange={handleDeviceImageUpload} className="hidden" />
+                  </label>
+                </div>
+              </div>
               <textarea required value={auctionForm.description} placeholder="Describe the item" onChange={(event) => setAuctionForm((prev) => ({ ...prev, description: event.target.value }))} className="min-h-24 rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2" />
             </div>
-            <p className="mt-3 text-xs text-slate-400">Use a public image URL ending in .jpg, .png, or .webp. Leave it blank to keep the image area empty.</p>
+            <p className="mt-3 text-xs text-slate-400">Use either a public image URL or upload an image from your device. Leave both empty to keep the image area blank.</p>
             <button disabled={isPublishing} type="submit" className="mt-4 rounded-xl bg-cyan-500 px-5 py-3 font-semibold text-slate-950 disabled:opacity-50">
               {isPublishing ? "Publishing..." : "Publish auction"}
             </button>
@@ -304,8 +433,8 @@ export default function Home() {
           {[
             ["Current bid", selectedAuction ? formatMoney(selectedAuction.current_bid) : "₹0"],
             ["Bids/sec", "146"],
-            ["Successful bids", stats.successful],
-            ["p99 latency", `${stats.latency}ms`],
+            ["Successful bids", stats.successful_bids],
+            ["Requests", stats.total_requests],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-2xl shadow-slate-950/40">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{label}</p>
@@ -416,8 +545,11 @@ export default function Home() {
               <h4 className="text-sm uppercase tracking-[0.2em] text-slate-400">Live activity</h4>
               <div className="mt-4 space-y-3">
                 {liveBids.length > 0 ? liveBids.map((bid, index) => (
-                  <div key={bid.id} className="flex items-center justify-between border-b border-white/5 pb-2 text-sm text-slate-300 last:border-0 last:pb-0">
-                    <span>{formatMoney(bid.amount)} {Math.max(0, Math.floor((liveClock - bid.createdAt) / 1000))} sec ago</span>
+                  <div key={bid.id} className="flex items-center justify-between gap-3 border-b border-white/5 pb-2 text-sm text-slate-300 last:border-0 last:pb-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-white">{bid.bidder}</div>
+                      <div className="text-slate-400">bid {formatBidLabel(bid.amount)} • {Math.max(0, Math.floor((liveClock - bid.createdAt) / 1000))} sec ago</div>
+                    </div>
                     <span className="text-xs text-slate-500">#{index + 1}</span>
                   </div>
                 )) : (

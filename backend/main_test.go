@@ -84,7 +84,7 @@ func TestStoreCreatesAuction(t *testing.T) {
 
 func TestStoreDeletesAuctionWithoutBids(t *testing.T) {
 	store := newStore()
-	auction, err := store.createAuction(CreateAuctionRequest{Title: "Delete me", Category: "Test", StartingPrice: 1000, DurationHours: 1})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Delete me", Category: "Test", StartingPrice: 1000, DurationMinutes: 10})
 	if err != nil {
 		t.Fatalf("unexpected error creating auction: %v", err)
 	}
