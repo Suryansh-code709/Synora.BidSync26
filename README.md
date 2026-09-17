@@ -1,4 +1,4 @@
-# Synora Auction System
+# BidSync
 
 A competition-grade real-time bidding platform demonstrating secure transactional bidding semantics, idempotency, live updates, and observability in a simple judge-friendly architecture.
 

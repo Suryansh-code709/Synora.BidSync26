@@ -34,3 +34,25 @@ button,
 input {
   font: inherit;
 }
+
+@keyframes hammerSwing {
+  0% {
+    transform: rotate(-18deg) scale(0.9);
+    opacity: 0.7;
+  }
+  35% {
+    transform: rotate(18deg) scale(1.1);
+    opacity: 1;
+  }
+  60% {
+    transform: rotate(-8deg) scale(1);
+  }
+  100% {
+    transform: rotate(0deg) scale(1);
+    opacity: 1;
+  }
+}
+
+.hammer-hit {
+  animation: hammerSwing 0.7s ease-in-out 1;
+}

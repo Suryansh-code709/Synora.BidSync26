@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Synora Auction System",
+  title: "BidSync",
   description: "Real-time bidding system with distributed transaction logic and live auction updates.",
 };
 

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestStoreRejectsLowBid(t *testing.T) {
 	store := newStore()
@@ -18,39 +21,39 @@ func TestStoreRejectsLowBid(t *testing.T) {
 
 func TestStoreAcceptsValidBid(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user2", Amount: 26000, IdempotencyKey: "valid-1"})
+	result, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user2", Amount: 86000, IdempotencyKey: "valid-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Accepted {
 		t.Fatalf("expected valid bid acceptance, got %+v", result)
 	}
-	if result.CurrentBid != 26000 {
-		t.Fatalf("expected current bid to be 26000, got %d", result.CurrentBid)
+	if result.CurrentBid != 86000 {
+		t.Fatalf("expected current bid to be 86000, got %d", result.CurrentBid)
 	}
 }
 
 func TestStoreIdempotencyIsStable(t *testing.T) {
 	store := newStore()
-	first, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user3", Amount: 27000, IdempotencyKey: "dup-1"})
+	first, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user3", Amount: 87000, IdempotencyKey: "dup-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	second, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user4", Amount: 28000, IdempotencyKey: "dup-1"})
+	second, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user4", Amount: 88000, IdempotencyKey: "dup-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if first.BidID != second.BidID {
 		t.Fatalf("expected same bid id for idempotent request, got %d and %d", first.BidID, second.BidID)
 	}
-	if second.CurrentBid != 27000 {
+	if second.CurrentBid != 87000 {
 		t.Fatalf("expected idempotent request to return original result, got %d", second.CurrentBid)
 	}
 }
 
 func TestStoreUsesRequestedAuctionID(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 2, Bidder: "user4", Amount: 19000, IdempotencyKey: "auction-2-1"})
+	result, err := store.placeBid(BidRequest{AuctionID: 2, Bidder: "user4", Amount: 121000, IdempotencyKey: "auction-2-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,8 +63,8 @@ func TestStoreUsesRequestedAuctionID(t *testing.T) {
 	if result.AuctionID != 2 {
 		t.Fatalf("expected response to target auction 2, got %d", result.AuctionID)
 	}
-	if auction, ok := store.auctions[2]; !ok || auction.CurrentBid != 19000 {
-		t.Fatalf("expected auction 2 current bid to update to 19000, got %+v", store.auctions[2])
+	if auction, ok := store.auctions[2]; !ok || auction.CurrentBid != 121000 {
+		t.Fatalf("expected auction 2 current bid to update to 121000, got %+v", store.auctions[2])
 	}
 }
 
@@ -77,8 +80,11 @@ func TestStoreCreatesAuction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if auction.ID != 4 || auction.CurrentBid != 50000 || auction.Status != AuctionStatusActive {
+	if auction.ID != 4 || auction.CurrentBid != 50000 || auction.Status != AuctionStatusUpcoming {
 		t.Fatalf("unexpected created auction: %+v", auction)
+	}
+	if time.Until(auction.StartsAt) > 6*time.Second || time.Until(auction.StartsAt) < 4*time.Second {
+		t.Fatalf("expected a 5-second countdown before auction starts, got starts_at=%s", auction.StartsAt.Format(time.RFC3339))
 	}
 }
 
@@ -106,5 +112,24 @@ func TestStoreDeletesAuctionWithBids(t *testing.T) {
 	}
 	if _, ok := store.getAuction(1); ok {
 		t.Fatalf("expected auction 1 to be deleted")
+	}
+}
+
+func TestStoreMetricsIncludeLoadAndThroughput(t *testing.T) {
+	store := newStore()
+	store.requests = 42
+	store.rejected = 7
+	store.nextBidID = 10
+	store.bids = []Bid{{ID: 1, AuctionID: 1, Bidder: "user1", Amount: 26000, CreatedAt: time.Now().UTC()}, {ID: 2, AuctionID: 1, Bidder: "user2", Amount: 27000, CreatedAt: time.Now().UTC()}}
+
+	metrics := store.getMetrics()
+	if _, ok := metrics["requests_per_second"]; !ok {
+		t.Fatalf("expected requests_per_second in metrics: %+v", metrics)
+	}
+	if _, ok := metrics["bids_per_second"]; !ok {
+		t.Fatalf("expected bids_per_second in metrics: %+v", metrics)
+	}
+	if metrics["successful_bids"] != len(store.bids) {
+		t.Fatalf("expected successful_bids to match bid count, got %+v", metrics)
 	}
 }

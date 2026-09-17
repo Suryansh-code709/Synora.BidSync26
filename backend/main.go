@@ -91,6 +91,8 @@ type Store struct {
 	nextBidID   int64
 	requests    int64
 	rejected    int64
+	requestLog  []time.Time
+	bidLog      []time.Time
 }
 
 func newStore() *Store {
@@ -98,47 +100,47 @@ func newStore() *Store {
 	auctions := map[int]*Auction{
 		1: {
 			ID:            1,
-			Title:         "Apex Racing Bike",
-			Description:   "Performance carbon road bike tuned for serious riders.",
-			Category:      "Cycling",
-			ImageURL:      "https://images.unsplash.com/photo-1541625602330-2277a4c46182?auto=format&fit=crop&w=1200&q=80",
-			StartingPrice: 25000,
-			CurrentBid:    25000,
+			Title:         "The Grand St. Petersburg View",
+			Description:   "A rare 19th-century European landscape painting with layered atmospheric depth and gilt frame provenance.",
+			Category:      "Antique Paintings",
+			ImageURL:      "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?auto=format&fit=crop&w=1200&q=80",
+			StartingPrice: 85000,
+			CurrentBid:    85000,
 			Status:        AuctionStatusActive,
-			StartsAt:      base.Add(-30 * time.Minute),
-			EndsAt:        base.Add(20 * time.Minute),
+			StartsAt:      base.Add(-25 * time.Minute),
+			EndsAt:        base.Add(35 * time.Minute),
 			Version:       0,
 			CreatedAt:     base.Add(-2 * time.Hour),
 			UpdatedAt:     base,
 		},
 		2: {
 			ID:            2,
-			Title:         "Luma Smartwatch",
-			Description:   "Premium wearable with AMOLED display and biometric insights.",
-			Category:      "Electronics",
-			ImageURL:      "https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=1200&q=80",
-			StartingPrice: 18000,
-			CurrentBid:    18000,
+			Title:         "Bronze Imperial Muse",
+			Description:   "A finely cast antique sculpture with a rich patina, museum-quality restoration, and collector appeal.",
+			Category:      "Antique Sculptures",
+			ImageURL:      "https://images.unsplash.com/photo-1533105079780-92b9be482077?auto=format&fit=crop&w=1200&q=80",
+			StartingPrice: 120000,
+			CurrentBid:    120000,
 			Status:        AuctionStatusActive,
-			StartsAt:      base.Add(-20 * time.Minute),
-			EndsAt:        base.Add(40 * time.Minute),
+			StartsAt:      base.Add(-18 * time.Minute),
+			EndsAt:        base.Add(42 * time.Minute),
 			Version:       0,
 			CreatedAt:     base.Add(-3 * time.Hour),
 			UpdatedAt:     base,
 		},
 		3: {
 			ID:            3,
-			Title:         "Summit Camera",
-			Description:   "Full-frame mirrorless camera built for creators and storytellers.",
-			Category:      "Photography",
-			ImageURL:      "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1200&q=80",
-			StartingPrice: 44000,
-			CurrentBid:    44000,
-			Status:        AuctionStatusUpcoming,
-			StartsAt:      base.Add(50 * time.Minute),
-			EndsAt:        base.Add(250 * time.Minute),
+			Title:         "Emerald & Pearl Heirloom Necklace",
+			Description:   "An exquisite antique jewelry piece featuring handcrafted stonework, delicate filigree, and heritage finish.",
+			Category:      "Jewelry",
+			ImageURL:      "https://images.unsplash.com/photo-1617038220319-276d3cfab638?auto=format&fit=crop&w=1200&q=80",
+			StartingPrice: 96000,
+			CurrentBid:    96000,
+			Status:        AuctionStatusActive,
+			StartsAt:      base.Add(-40 * time.Minute),
+			EndsAt:        base.Add(28 * time.Minute),
 			Version:       0,
-			CreatedAt:     base.Add(-1 * time.Hour),
+			CreatedAt:     base.Add(-4 * time.Hour),
 			UpdatedAt:     base,
 		},
 	}
@@ -157,10 +159,34 @@ func (s *Store) minimumNextBid(current int64) int64 {
 	return current + 1000
 }
 
+func (s *Store) trackRequest(now time.Time) {
+	cutoff := now.Add(-time.Minute)
+	filtered := s.requestLog[:0]
+	for _, ts := range s.requestLog {
+		if ts.After(cutoff) || ts.Equal(cutoff) {
+			filtered = append(filtered, ts)
+		}
+	}
+	s.requestLog = append(filtered, now)
+}
+
+func (s *Store) trackBid(now time.Time) {
+	cutoff := now.Add(-time.Minute)
+	filtered := s.bidLog[:0]
+	for _, ts := range s.bidLog {
+		if ts.After(cutoff) || ts.Equal(cutoff) {
+			filtered = append(filtered, ts)
+		}
+	}
+	s.bidLog = append(filtered, now)
+}
+
 func (s *Store) listAuctions() []Auction {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().UTC()
 	s.requests++
+	s.trackRequest(now)
 	out := make([]Auction, 0, len(s.auctions))
 	for _, a := range s.auctions {
 		updated := normalizeAuctionStatus(a)
@@ -189,6 +215,8 @@ func normalizeAuctionStatus(a *Auction) *Auction {
 func (s *Store) getAuction(id int) (Auction, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.requests++
+	s.trackRequest(time.Now().UTC())
 	a, ok := s.auctions[id]
 	if !ok {
 		return Auction{}, false
@@ -219,13 +247,17 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now().UTC()
+	s.requests++
+	s.trackRequest(now)
+
 	nextID := 1
 	for id := range s.auctions {
 		if id >= nextID {
 			nextID = id + 1
 		}
 	}
-	now := time.Now().UTC()
+	launchAt := now.Add(5 * time.Second)
 	imageURL := strings.TrimSpace(req.ImageURL)
 	auction := Auction{
 		ID:            nextID,
@@ -235,13 +267,14 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 		ImageURL:      imageURL,
 		StartingPrice: req.StartingPrice,
 		CurrentBid:    req.StartingPrice,
-		Status:        AuctionStatusActive,
-		StartsAt:      now,
-		EndsAt:        now.Add(time.Duration(durationMinutes) * time.Minute),
+		Status:        AuctionStatusUpcoming,
+		StartsAt:      launchAt,
+		EndsAt:        launchAt.Add(time.Duration(durationMinutes) * time.Minute),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
 	s.auctions[nextID] = &auction
+	log.Printf("[auction] created id=%d title=%q category=%q starts_at=%s ends_at=%s", auction.ID, auction.Title, auction.Category, auction.StartsAt.Format(time.RFC3339), auction.EndsAt.Format(time.RFC3339))
 	s.emitEvent(Event{Type: "auction_created", AuctionID: nextID, Payload: map[string]any{"auction": auction}})
 	return cloneAuction(auction), nil
 }
@@ -285,11 +318,17 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	now := time.Now().UTC()
+	s.requests++
+	s.trackRequest(now)
+
 	if req.IdempotencyKey != "" {
 		if existing, ok := s.idempotency[fmt.Sprintf("%d:%s", req.AuctionID, req.IdempotencyKey)]; ok {
+			log.Printf("[bid] idempotent replay auction_id=%d bidder=%s amount=%d key=%s", req.AuctionID, req.Bidder, req.Amount, req.IdempotencyKey)
 			return existing, nil
 		}
 		if existing, ok := s.idempotency[req.IdempotencyKey]; ok {
+			log.Printf("[bid] idempotent replay auction_id=%d bidder=%s amount=%d key=%s", req.AuctionID, req.Bidder, req.Amount, req.IdempotencyKey)
 			return existing, nil
 		}
 	}
@@ -301,14 +340,17 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 	a = normalizeAuctionStatus(a)
 	if a.Status != AuctionStatusActive {
 		s.rejected++
+		log.Printf("[bid] rejected auction_id=%d reason=inactive bidder=%s amount=%d", a.ID, req.Bidder, req.Amount)
 		return Acknowledge{Accepted: false, Message: "Auction is not active.", CurrentBid: a.CurrentBid, AuctionID: a.ID}, nil
 	}
 	if req.Amount < s.minimumNextBid(a.CurrentBid) {
 		s.rejected++
+		log.Printf("[bid] rejected auction_id=%d reason=too_low bidder=%s amount=%d minimum=%d", a.ID, req.Bidder, req.Amount, s.minimumNextBid(a.CurrentBid))
 		return Acknowledge{Accepted: false, Message: "Bid too low.", CurrentBid: a.CurrentBid, MinimumNext: s.minimumNextBid(a.CurrentBid), AuctionID: a.ID}, nil
 	}
 	if time.Now().UTC().After(a.EndsAt) || a.Status == AuctionStatusEnded {
 		s.rejected++
+		log.Printf("[bid] rejected auction_id=%d reason=closed bidder=%s amount=%d", a.ID, req.Bidder, req.Amount)
 		return Acknowledge{Accepted: false, Message: "Auction closed.", CurrentBid: a.CurrentBid, AuctionID: a.ID}, nil
 	}
 	s.nextBidID++
@@ -339,6 +381,8 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 		s.idempotency[fmt.Sprintf("%d:%s", req.AuctionID, req.IdempotencyKey)] = result
 		s.idempotency[req.IdempotencyKey] = result
 	}
+	s.trackBid(time.Now().UTC())
+	log.Printf("[bid] accepted auction_id=%d bidder=%s amount=%d total_bids=%d current_bid=%d", a.ID, req.Bidder, req.Amount, len(s.bids), a.CurrentBid)
 	payload := map[string]any{
 		"auction": a,
 		"bid":     bid,
@@ -388,14 +432,28 @@ func (s *Store) getMetrics() map[string]any {
 	if len(s.bids) > 0 {
 		averageBid = totalAmount / int64(len(s.bids))
 	}
+
+	requestRate := 0.0
+	if len(s.requestLog) > 0 {
+		requestRate = float64(len(s.requestLog)) / 60.0
+	}
+	bidRate := 0.0
+	if len(s.bidLog) > 0 {
+		bidRate = float64(len(s.bidLog)) / 60.0
+	}
+
 	return map[string]any{
-		"active_auctions": len(s.auctions),
-		"total_requests":  s.requests,
-		"total_bids":      len(s.bids),
-		"successful_bids": len(s.bids),
-		"rejected_bids":   s.rejected,
-		"average_bid":     averageBid,
-		"connections":     len(s.clients),
+		"active_auctions":     len(s.auctions),
+		"total_requests":      s.requests,
+		"total_bids":          len(s.bids),
+		"successful_bids":     len(s.bids),
+		"rejected_bids":       s.rejected,
+		"average_bid":         averageBid,
+		"connections":         len(s.clients),
+		"requests_per_second": fmt.Sprintf("%.2f", requestRate),
+		"bids_per_second":     fmt.Sprintf("%.2f", bidRate),
+		"load_index":          fmt.Sprintf("%.0f", min(100.0, requestRate*10.0+float64(len(s.clients))*2.5)),
+		"last_updated":        time.Now().UTC().Format(time.RFC3339),
 	}
 }
 
