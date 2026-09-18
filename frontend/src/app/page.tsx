@@ -158,6 +158,7 @@ export default function Home() {
   const [walletAddress, setWalletAddress] = useState("");
   const [walletNetwork, setWalletNetwork] = useState(POLYGON_NETWORK);
   const [connectingWallet, setConnectingWallet] = useState(false);
+  const [anonymousName, setAnonymousName] = useState("Anonymous collector");
   const selectedIdRef = useRef<number>(selectedId);
 
   const selectedAuction = useMemo(
@@ -379,6 +380,7 @@ export default function Home() {
     setIsSubmitting(true);
     const requestKey = key ?? makeBidKey("market");
     const walletMessage = buildWalletMessage(selectedAuction.id, amount, requestKey);
+    const publicBidder = anonymousName.trim() || formatMaskedAddress(walletAddress);
 
     try {
       const ethereum = (window as any).ethereum;
@@ -394,7 +396,8 @@ export default function Home() {
           "Idempotency-Key": requestKey,
         },
         body: JSON.stringify({
-          bidder: formatMaskedAddress(walletAddress),
+          bidder: publicBidder,
+          bidder_alias: publicBidder,
           amount,
           idempotency_key: requestKey,
           wallet_address: walletAddress,
@@ -413,7 +416,7 @@ export default function Home() {
         upsertLiveBid({
           id: String(data.bid_id ?? requestKey),
           amount: data.current_bid ?? amount,
-          bidder: formatMaskedAddress(walletAddress),
+          bidder: publicBidder,
           createdAt: Date.now(),
         });
         setMessage({ type: "success", text: `Wallet verified bid accepted for ${formatMoney(data.current_bid ?? amount)}` });
@@ -500,6 +503,16 @@ export default function Home() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
+            <div className="flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/70 px-2 py-1.5">
+              <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Alias</span>
+              <input
+                value={anonymousName}
+                onChange={(event) => setAnonymousName(event.target.value.slice(0, 20))}
+                placeholder="Anonymous collector"
+                className="w-36 border-0 bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
+              />
+            </div>
+
             <button
               type="button"
               onClick={walletConnected ? disconnectWallet : connectWallet}

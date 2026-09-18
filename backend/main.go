@@ -54,6 +54,7 @@ type Bid struct {
 type BidRequest struct {
 	AuctionID      int    `json:"auction_id"`
 	Bidder         string `json:"bidder"`
+	BidderAlias    string `json:"bidder_alias"`
 	Amount         int64  `json:"amount"`
 	IdempotencyKey string `json:"idempotency_key"`
 	WalletAddress  string `json:"wallet_address"`
@@ -363,6 +364,9 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 	if req.Amount <= 0 {
 		return Acknowledge{}, errors.New("amount must be positive")
 	}
+	if trimmedAlias := strings.TrimSpace(req.BidderAlias); trimmedAlias != "" {
+		req.Bidder = trimmedAlias
+	}
 	if req.WalletAddress != "" {
 		if req.Signature == "" {
 			return Acknowledge{}, errors.New("wallet signature required")
@@ -371,7 +375,9 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 		if !verifyWalletSignature(req.WalletAddress, req.Signature, msg) {
 			return Acknowledge{}, errors.New("wallet signature validation failed")
 		}
-		req.Bidder = maskWalletAddress(req.WalletAddress)
+		if strings.TrimSpace(req.Bidder) == "" {
+			req.Bidder = maskWalletAddress(req.WalletAddress)
+		}
 	}
 	if strings.TrimSpace(req.Bidder) == "" {
 		return Acknowledge{}, errors.New("bidder required")

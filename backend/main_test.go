@@ -115,6 +115,23 @@ func TestStoreDeletesAuctionWithBids(t *testing.T) {
 	}
 }
 
+func TestStoreAcceptsAnonymousAlias(t *testing.T) {
+	store := newStore()
+	result, err := store.placeBid(BidRequest{AuctionID: 1, Amount: 90000, BidderAlias: "Nighthawk", IdempotencyKey: "alias-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatalf("expected alias-based bid to be accepted, got %+v", result)
+	}
+	if result.AuctionID != 1 {
+		t.Fatalf("expected response to target auction 1, got %d", result.AuctionID)
+	}
+	if got := store.auctions[1].CurrentBidder; got != "Nighthawk" {
+		t.Fatalf("expected bidder alias to be stored, got %q", got)
+	}
+}
+
 func TestStoreMetricsIncludeLoadAndThroughput(t *testing.T) {
 	store := newStore()
 	store.requests = 42
