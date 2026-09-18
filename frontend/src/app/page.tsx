@@ -1,6 +1,6 @@
 "use client";
 
-import { BrowserProvider } from "ethers";
+import { BrowserProvider, formatEther } from "ethers";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Auction = {
@@ -159,6 +159,7 @@ export default function Home() {
   const [walletNetwork, setWalletNetwork] = useState(POLYGON_NETWORK);
   const [connectingWallet, setConnectingWallet] = useState(false);
   const [anonymousName, setAnonymousName] = useState("Anonymous collector");
+  const [walletBalance, setWalletBalance] = useState<bigint | null>(null);
   const selectedIdRef = useRef<number>(selectedId);
 
   const selectedAuction = useMemo(
@@ -291,10 +292,12 @@ export default function Home() {
       const signer = await provider.getSigner();
       const address = await signer.getAddress();
       const network = await provider.getNetwork();
+      const balance = await provider.getBalance(address);
       setWalletAddress(address);
       setWalletNetwork(network?.name ? network.name : POLYGON_NETWORK);
+      setWalletBalance(balance);
       setWalletConnected(true);
-      setMessage({ type: "success", text: `Wallet connected: ${formatMaskedAddress(address)}` });
+      setMessage({ type: "success", text: `Wallet connected: ${formatMaskedAddress(address)} | Balance: ${Number(formatEther(balance)).toFixed(3)} MATIC` });
       if (accounts?.length === 0) {
         setWalletConnected(false);
       }
@@ -311,6 +314,7 @@ export default function Home() {
   const disconnectWallet = () => {
     setWalletConnected(false);
     setWalletAddress("");
+    setWalletBalance(null);
     setWalletNetwork(POLYGON_NETWORK);
     setMessage({ type: "info", text: "Wallet disconnected. Connect a Polygon wallet to continue." });
   };
@@ -374,6 +378,10 @@ export default function Home() {
     if (!selectedAuction) return;
     if (!walletConnected || !walletAddress) {
       setMessage({ type: "error", text: "Connect your Polygon wallet to participate anonymously in the market." });
+      return;
+    }
+    if (walletBalance !== null && amount > Number(formatEther(walletBalance))) {
+      setMessage({ type: "error", text: `Insufficient wallet balance. You only have ${Number(formatEther(walletBalance)).toFixed(3)} MATIC available.` });
       return;
     }
 
@@ -524,7 +532,7 @@ export default function Home() {
 
             {walletConnected && (
               <span className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-emerald-200">
-                {formatMaskedAddress(walletAddress)} • {walletNetwork}
+                {formatMaskedAddress(walletAddress)} • {walletNetwork} • {walletBalance ? `${Number(formatEther(walletBalance)).toFixed(3)} MATIC` : "Balance unavailable"}
               </span>
             )}
 
