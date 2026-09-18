@@ -929,7 +929,7 @@ export default function Home() {
                     <p className="text-slate-300">{selectedAuction.description}</p>
                     <div className="grid grid-cols-3 gap-3 text-sm text-slate-300">
                       <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Current</span><div className="mt-2 text-lg font-semibold text-cyan-300">{formatMoney(selectedAuction.current_bid)}</div></div>
-                      <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Minimum</span><div className="mt-2 text-lg font-semibold text-white">{formatMoney(selectedAuction.current_bid + 1000)}</div></div>
+                      <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Minimum</span><div className="mt-2 text-lg font-semibold text-white">{formatMoney(selectedAuction.current_bid + 1)}</div></div>
                       <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Bids</span><div className="mt-2 text-lg font-semibold text-white">{selectedAuction.bid_count || 0}</div></div>
                     </div>
 
@@ -960,7 +960,7 @@ export default function Home() {
                         />
                         <button
                           type="button"
-                          onClick={() => placeBid(Number(customBid) || selectedAuction.current_bid + 1000, makeBidKey("manual"))}
+                          onClick={() => placeBid(Number(customBid) || selectedAuction.current_bid + 1, makeBidKey("manual"))}
                           disabled={isSubmitting || auctionEnded || !walletConnected}
                           className="rounded-xl bg-cyan-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
                         >

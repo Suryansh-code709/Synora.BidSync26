@@ -33,6 +33,20 @@ func TestStoreAcceptsValidBid(t *testing.T) {
 	}
 }
 
+func TestStoreAcceptsAnyBidAboveCurrent(t *testing.T) {
+	store := newStore()
+	result, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user-any", Amount: 85001, IdempotencyKey: "any-above-current"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatalf("expected any amount above current bid to be accepted, got %+v", result)
+	}
+	if result.CurrentBid != 85001 {
+		t.Fatalf("expected current bid to be 85001, got %d", result.CurrentBid)
+	}
+}
+
 func TestStoreIdempotencyIsStable(t *testing.T) {
 	store := newStore()
 	first, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user3", Amount: 87000, IdempotencyKey: "dup-1"})

@@ -163,9 +163,9 @@ func newStore() *Store {
 
 func (s *Store) minimumNextBid(current int64) int64 {
 	if current <= 0 {
-		return 1000
+		return 1
 	}
-	return current + 1000
+	return current + 1
 }
 
 func (s *Store) trackRequest(now time.Time) {
