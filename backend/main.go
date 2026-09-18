@@ -26,22 +26,26 @@ const (
 )
 
 type Auction struct {
-	ID            int           `json:"id"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description"`
-	Category      string        `json:"category"`
-	ImageURL      string        `json:"image_url"`
-	OwnerWallet   string        `json:"owner_wallet,omitempty"`
-	StartingPrice int64         `json:"starting_price"`
-	CurrentBid    int64         `json:"current_bid"`
-	CurrentBidder string        `json:"current_bidder,omitempty"`
-	Status        AuctionStatus `json:"status"`
-	StartsAt      time.Time     `json:"starts_at"`
-	EndsAt        time.Time     `json:"ends_at"`
-	Version       int64         `json:"version"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
-	BidCount      int           `json:"bid_count"`
+	ID                  int           `json:"id"`
+	Title               string        `json:"title"`
+	Description         string        `json:"description"`
+	Category            string        `json:"category"`
+	ImageURL            string        `json:"image_url"`
+	OwnerWallet         string        `json:"owner_wallet,omitempty"`
+	SellerContact       string        `json:"seller_contact,omitempty"`
+	PaymentInstructions string        `json:"payment_instructions,omitempty"`
+	PickupLocation      string        `json:"pickup_location,omitempty"`
+	StartingPrice       int64         `json:"starting_price"`
+	CurrentBid          int64         `json:"current_bid"`
+	CurrentBidder       string        `json:"current_bidder,omitempty"`
+	CurrentBidderWallet string        `json:"current_bidder_wallet,omitempty"`
+	Status              AuctionStatus `json:"status"`
+	StartsAt            time.Time     `json:"starts_at"`
+	EndsAt              time.Time     `json:"ends_at"`
+	Version             int64         `json:"version"`
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
+	BidCount            int           `json:"bid_count"`
 }
 
 type Bid struct {
@@ -64,14 +68,17 @@ type BidRequest struct {
 }
 
 type CreateAuctionRequest struct {
-	Title           string `json:"title"`
-	Description     string `json:"description"`
-	Category        string `json:"category"`
-	ImageURL        string `json:"image_url"`
-	OwnerWallet     string `json:"owner_wallet,omitempty"`
-	StartingPrice   int64  `json:"starting_price"`
-	DurationMinutes int    `json:"duration_minutes"`
-	DurationHours   int    `json:"duration_hours"`
+	Title               string `json:"title"`
+	Description         string `json:"description"`
+	Category            string `json:"category"`
+	ImageURL            string `json:"image_url"`
+	OwnerWallet         string `json:"owner_wallet,omitempty"`
+	SellerContact       string `json:"seller_contact,omitempty"`
+	PaymentInstructions string `json:"payment_instructions,omitempty"`
+	PickupLocation      string `json:"pickup_location,omitempty"`
+	StartingPrice       int64  `json:"starting_price"`
+	DurationMinutes     int    `json:"duration_minutes"`
+	DurationHours       int    `json:"duration_hours"`
 }
 
 type Acknowledge struct {
@@ -91,13 +98,30 @@ type Event struct {
 	Payload   any    `json:"payload"`
 }
 
+type ChatMessage struct {
+	ID           int64     `json:"id"`
+	AuctionID    int       `json:"auction_id"`
+	Sender       string    `json:"sender"`
+	SenderWallet string    `json:"sender_wallet,omitempty"`
+	Message      string    `json:"message"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type ChatRequest struct {
+	SenderWallet string `json:"sender_wallet"`
+	SenderName   string `json:"sender_name"`
+	Message      string `json:"message"`
+}
+
 type Store struct {
 	mu          sync.Mutex
 	auctions    map[int]*Auction
 	bids        []Bid
 	clients     map[chan string]struct{}
 	idempotency map[string]Acknowledge
+	chats       map[int][]ChatMessage
 	nextBidID   int64
+	nextChatID  int64
 	requests    int64
 	rejected    int64
 	requestLog  []time.Time
@@ -105,59 +129,12 @@ type Store struct {
 }
 
 func newStore() *Store {
-	base := time.Now().UTC()
-	auctions := map[int]*Auction{
-		1: {
-			ID:            1,
-			Title:         "The Grand St. Petersburg View",
-			Description:   "A rare 19th-century European landscape painting with layered atmospheric depth and gilt frame provenance.",
-			Category:      "Antique Paintings",
-			ImageURL:      "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?auto=format&fit=crop&w=1200&q=80",
-			StartingPrice: 85000,
-			CurrentBid:    85000,
-			Status:        AuctionStatusActive,
-			StartsAt:      base.Add(-25 * time.Minute),
-			EndsAt:        base.Add(35 * time.Minute),
-			Version:       0,
-			CreatedAt:     base.Add(-2 * time.Hour),
-			UpdatedAt:     base,
-		},
-		2: {
-			ID:            2,
-			Title:         "Bronze Imperial Muse",
-			Description:   "A finely cast antique sculpture with a rich patina, museum-quality restoration, and collector appeal.",
-			Category:      "Antique Sculptures",
-			ImageURL:      "https://images.unsplash.com/photo-1533105079780-92b9be482077?auto=format&fit=crop&w=1200&q=80",
-			StartingPrice: 120000,
-			CurrentBid:    120000,
-			Status:        AuctionStatusActive,
-			StartsAt:      base.Add(-18 * time.Minute),
-			EndsAt:        base.Add(42 * time.Minute),
-			Version:       0,
-			CreatedAt:     base.Add(-3 * time.Hour),
-			UpdatedAt:     base,
-		},
-		3: {
-			ID:            3,
-			Title:         "Emerald & Pearl Heirloom Necklace",
-			Description:   "An exquisite antique jewelry piece featuring handcrafted stonework, delicate filigree, and heritage finish.",
-			Category:      "Jewelry",
-			ImageURL:      "https://images.unsplash.com/photo-1617038220319-276d3cfab638?auto=format&fit=crop&w=1200&q=80",
-			StartingPrice: 96000,
-			CurrentBid:    96000,
-			Status:        AuctionStatusActive,
-			StartsAt:      base.Add(-40 * time.Minute),
-			EndsAt:        base.Add(28 * time.Minute),
-			Version:       0,
-			CreatedAt:     base.Add(-4 * time.Hour),
-			UpdatedAt:     base,
-		},
-	}
 	return &Store{
-		auctions:    auctions,
+		auctions:    map[int]*Auction{},
 		bids:        []Bid{},
 		clients:     map[chan string]struct{}{},
 		idempotency: map[string]Acknowledge{},
+		chats:       map[int][]ChatMessage{},
 	}
 }
 
@@ -269,19 +246,22 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 	launchAt := now.Add(5 * time.Second)
 	imageURL := strings.TrimSpace(req.ImageURL)
 	auction := Auction{
-		ID:            nextID,
-		Title:         strings.TrimSpace(req.Title),
-		Description:   strings.TrimSpace(req.Description),
-		Category:      strings.TrimSpace(req.Category),
-		ImageURL:      imageURL,
-		OwnerWallet:   normalizeWalletAddress(req.OwnerWallet),
-		StartingPrice: req.StartingPrice,
-		CurrentBid:    req.StartingPrice,
-		Status:        AuctionStatusUpcoming,
-		StartsAt:      launchAt,
-		EndsAt:        launchAt.Add(time.Duration(durationMinutes) * time.Minute),
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                  nextID,
+		Title:               strings.TrimSpace(req.Title),
+		Description:         strings.TrimSpace(req.Description),
+		Category:            strings.TrimSpace(req.Category),
+		ImageURL:            imageURL,
+		OwnerWallet:         normalizeWalletAddress(req.OwnerWallet),
+		SellerContact:       strings.TrimSpace(req.SellerContact),
+		PaymentInstructions: strings.TrimSpace(req.PaymentInstructions),
+		PickupLocation:      strings.TrimSpace(req.PickupLocation),
+		StartingPrice:       req.StartingPrice,
+		CurrentBid:          req.StartingPrice,
+		Status:              AuctionStatusUpcoming,
+		StartsAt:            launchAt,
+		EndsAt:              launchAt.Add(time.Duration(durationMinutes) * time.Minute),
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	s.auctions[nextID] = &auction
 	log.Printf("[auction] created id=%d title=%q category=%q starts_at=%s ends_at=%s", auction.ID, auction.Title, auction.Category, auction.StartsAt.Format(time.RFC3339), auction.EndsAt.Format(time.RFC3339))
@@ -437,9 +417,16 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 		Amount:    req.Amount,
 		CreatedAt: time.Now().UTC(),
 	}
+	if req.WalletAddress != "" {
+		bidderWallet := normalizeWalletAddress(req.WalletAddress)
+		if bidderWallet != "" {
+			bid.Bidder = req.Bidder
+		}
+	}
 	s.bids = append(s.bids, bid)
 	a.CurrentBid = req.Amount
 	a.CurrentBidder = req.Bidder
+	a.CurrentBidderWallet = normalizeWalletAddress(req.WalletAddress)
 	a.UpdatedAt = bid.CreatedAt
 	a.Version++
 	a.BidCount = len(s.bids)
@@ -466,6 +453,47 @@ func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 	}
 	s.emitEvent(Event{Type: "bid_accepted", AuctionID: a.ID, Payload: payload})
 	return result, nil
+}
+
+func (s *Store) listChatMessages(id int) []ChatMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages := s.chats[id]
+	copied := make([]ChatMessage, len(messages))
+	copy(copied, messages)
+	return copied
+}
+
+func (s *Store) sendChatMessage(id int, req ChatRequest) (ChatMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.auctions[id]
+	if !ok {
+		return ChatMessage{}, errors.New("auction not found")
+	}
+	senderWallet := normalizeWalletAddress(req.SenderWallet)
+	if senderWallet == "" || strings.TrimSpace(req.Message) == "" {
+		return ChatMessage{}, errors.New("sender wallet and message are required")
+	}
+	allowed := strings.EqualFold(normalizeWalletAddress(a.OwnerWallet), senderWallet)
+	if !allowed {
+		allowed = strings.EqualFold(normalizeWalletAddress(a.CurrentBidderWallet), senderWallet)
+	}
+	if !allowed {
+		return ChatMessage{}, errors.New("only the seller or current highest bidder can chat")
+	}
+	s.nextChatID++
+	msg := ChatMessage{
+		ID:           s.nextChatID,
+		AuctionID:    id,
+		Sender:       strings.TrimSpace(req.SenderName),
+		SenderWallet: senderWallet,
+		Message:      strings.TrimSpace(req.Message),
+		CreatedAt:    time.Now().UTC(),
+	}
+	s.chats[id] = append(s.chats[id], msg)
+	return msg, nil
 }
 
 func (s *Store) emitEvent(evt Event) {
@@ -583,9 +611,35 @@ func main() {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		path := strings.TrimPrefix(r.URL.Path, "/api/auctions/")
 		idStr := strings.TrimSuffix(path, "/bids")
+		idStr = strings.TrimSuffix(idStr, "/chat")
 		id, err := strconv.Atoi(idStr)
 		if err != nil || id <= 0 {
 			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/chat") {
+			if r.Method == http.MethodGet {
+				json.NewEncoder(w).Encode(store.listChatMessages(id))
+				return
+			}
+			if r.Method == http.MethodPost {
+				var req ChatRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+					return
+				}
+				msg, err := store.sendChatMessage(id, req)
+				if err != nil {
+					w.WriteHeader(http.StatusForbidden)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+				json.NewEncoder(w).Encode(msg)
+				return
+			}
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		if r.Method == http.MethodGet {

@@ -5,9 +5,21 @@ import (
 	"time"
 )
 
+func activateAuctionForTesting(store *Store, auction Auction) {
+	auction.StartsAt = time.Now().Add(-time.Minute)
+	auction.EndsAt = time.Now().Add(30 * time.Minute)
+	auction.Status = AuctionStatusActive
+	store.auctions[auction.ID] = &auction
+}
+
 func TestStoreRejectsLowBid(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user1", Amount: 25999, IdempotencyKey: "low-bid-1"})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Demo item", Category: "Test", StartingPrice: 25000, DurationMinutes: 30})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	activateAuctionForTesting(store, auction)
+	result, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user1", Amount: 25000, IdempotencyKey: "low-bid-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -21,7 +33,12 @@ func TestStoreRejectsLowBid(t *testing.T) {
 
 func TestStoreAcceptsValidBid(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user2", Amount: 86000, IdempotencyKey: "valid-1"})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Demo item", Category: "Test", StartingPrice: 70000, DurationMinutes: 30})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	activateAuctionForTesting(store, auction)
+	result, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user2", Amount: 86000, IdempotencyKey: "valid-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +52,12 @@ func TestStoreAcceptsValidBid(t *testing.T) {
 
 func TestStoreAcceptsAnyBidAboveCurrent(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user-any", Amount: 85001, IdempotencyKey: "any-above-current"})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Demo item", Category: "Test", StartingPrice: 75000, DurationMinutes: 30})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	activateAuctionForTesting(store, auction)
+	result, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user-any", Amount: 85001, IdempotencyKey: "any-above-current"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,11 +71,16 @@ func TestStoreAcceptsAnyBidAboveCurrent(t *testing.T) {
 
 func TestStoreIdempotencyIsStable(t *testing.T) {
 	store := newStore()
-	first, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user3", Amount: 87000, IdempotencyKey: "dup-1"})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Demo item", Category: "Test", StartingPrice: 80000, DurationMinutes: 30})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	activateAuctionForTesting(store, auction)
+	first, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user3", Amount: 87000, IdempotencyKey: "dup-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	second, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user4", Amount: 88000, IdempotencyKey: "dup-1"})
+	second, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user4", Amount: 88000, IdempotencyKey: "dup-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,18 +94,23 @@ func TestStoreIdempotencyIsStable(t *testing.T) {
 
 func TestStoreUsesRequestedAuctionID(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 2, Bidder: "user4", Amount: 121000, IdempotencyKey: "auction-2-1"})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Auction 2", Category: "Test", StartingPrice: 90000, DurationMinutes: 30})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	activateAuctionForTesting(store, auction)
+	result, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user4", Amount: 121000, IdempotencyKey: "auction-2-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Accepted {
-		t.Fatalf("expected bid on auction 2 to be accepted, got %+v", result)
+		t.Fatalf("expected bid on auction %d to be accepted, got %+v", auction.ID, result)
 	}
-	if result.AuctionID != 2 {
-		t.Fatalf("expected response to target auction 2, got %d", result.AuctionID)
+	if result.AuctionID != auction.ID {
+		t.Fatalf("expected response to target auction %d, got %d", auction.ID, result.AuctionID)
 	}
-	if auction, ok := store.auctions[2]; !ok || auction.CurrentBid != 121000 {
-		t.Fatalf("expected auction 2 current bid to update to 121000, got %+v", store.auctions[2])
+	if stored, ok := store.auctions[auction.ID]; !ok || stored.CurrentBid != 121000 {
+		t.Fatalf("expected auction %d current bid to update to 121000, got %+v", auction.ID, store.auctions[auction.ID])
 	}
 }
 
@@ -94,7 +126,7 @@ func TestStoreCreatesAuction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if auction.ID != 4 || auction.CurrentBid != 50000 || auction.Status != AuctionStatusUpcoming {
+	if auction.ID != 1 || auction.CurrentBid != 50000 || auction.Status != AuctionStatusUpcoming {
 		t.Fatalf("unexpected created auction: %+v", auction)
 	}
 	if time.Until(auction.StartsAt) > 6*time.Second || time.Until(auction.StartsAt) < 4*time.Second {
@@ -149,17 +181,22 @@ func TestStoreDeletesAuctionWithBids(t *testing.T) {
 
 func TestStoreAcceptsAnonymousAlias(t *testing.T) {
 	store := newStore()
-	result, err := store.placeBid(BidRequest{AuctionID: 1, Amount: 90000, BidderAlias: "Nighthawk", IdempotencyKey: "alias-1"})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Alias item", Category: "Test", StartingPrice: 85000, DurationMinutes: 30})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	activateAuctionForTesting(store, auction)
+	result, err := store.placeBid(BidRequest{AuctionID: auction.ID, Amount: 90000, BidderAlias: "Nighthawk", IdempotencyKey: "alias-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Accepted {
 		t.Fatalf("expected alias-based bid to be accepted, got %+v", result)
 	}
-	if result.AuctionID != 1 {
-		t.Fatalf("expected response to target auction 1, got %d", result.AuctionID)
+	if result.AuctionID != auction.ID {
+		t.Fatalf("expected response to target auction %d, got %d", auction.ID, result.AuctionID)
 	}
-	if got := store.auctions[1].CurrentBidder; got != "Nighthawk" {
+	if got := store.auctions[auction.ID].CurrentBidder; got != "Nighthawk" {
 		t.Fatalf("expected bidder alias to be stored, got %q", got)
 	}
 }

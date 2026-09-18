@@ -10,9 +10,13 @@ type Auction = {
   category: string;
   image_url: string;
   owner_wallet?: string;
+  seller_contact?: string;
+  payment_instructions?: string;
+  pickup_location?: string;
   starting_price: number;
   current_bid: number;
   current_bidder?: string;
+  current_bidder_wallet?: string;
   status: "upcoming" | "active" | "ended";
   starts_at: string;
   ends_at: string;
@@ -45,6 +49,9 @@ type AuctionForm = {
   starting_price: string;
   duration_minutes: string;
   image_url: string;
+  seller_contact: string;
+  payment_instructions: string;
+  pickup_location: string;
 };
 
 type Metrics = {
@@ -170,6 +177,8 @@ export default function Home() {
   const [liveBids, setLiveBids] = useState<LiveBid[]>([]);
   const [liveClock, setLiveClock] = useState(() => Date.now());
   const [showSellerForm, setShowSellerForm] = useState(false);
+  const [chatMessages, setChatMessages] = useState<Array<{ id: number; sender: string; sender_wallet: string; message: string; created_at: string }>>([]);
+  const [chatInput, setChatInput] = useState("");
   const [auctionForm, setAuctionForm] = useState<AuctionForm>({
     title: "",
     description: "",
@@ -177,6 +186,9 @@ export default function Home() {
     starting_price: "",
     duration_minutes: "30",
     image_url: "",
+    seller_contact: "",
+    payment_instructions: "",
+    pickup_location: "",
   });
   const [isPublishing, setIsPublishing] = useState(false);
   const [stats, setStats] = useState<Metrics>({
@@ -302,6 +314,55 @@ export default function Home() {
     }
   };
 
+  const fetchAuctionChat = async (auctionId: number) => {
+    if (!auctionId) return;
+    try {
+      const response = await fetch(`${API_URL}/api/auctions/${auctionId}/chat`);
+      if (!response.ok) return;
+      const data = await response.json();
+      setChatMessages(Array.isArray(data) ? data : []);
+    } catch {
+      setChatMessages([]);
+    }
+  };
+
+  const sendChatMessage = async () => {
+    if (!selectedAuction) return;
+    if (!walletConnected || !walletAddress) {
+      setMessage({ type: "error", text: "Connect your wallet to chat with the seller or winner." });
+      return;
+    }
+    const isSeller = normalizeWalletAddress(selectedAuction.owner_wallet) === normalizeWalletAddress(walletAddress);
+    const isWinner = normalizeWalletAddress(selectedAuction.current_bidder_wallet) === normalizeWalletAddress(walletAddress);
+    if (!isSeller && !isWinner) {
+      setMessage({ type: "error", text: "Only the seller or the current highest bidder can chat on this auction." });
+      return;
+    }
+    const trimmed = chatInput.trim();
+    if (!trimmed) return;
+    try {
+      const response = await fetch(`${API_URL}/api/auctions/${selectedAuction.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sender_wallet: walletAddress,
+          sender_name: anonymousName.trim() || "Anonymous collector",
+          message: trimmed,
+        }),
+      });
+      const responseText = await response.text();
+      if (!response.ok) {
+        throw new Error(responseText || "Unable to send chat message");
+      }
+      const newMessage = JSON.parse(responseText);
+      setChatMessages((prev) => [...prev, newMessage]);
+      setChatInput("");
+      setMessage({ type: "success", text: "Message sent to the auction chat." });
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "Unable to send chat message." });
+    }
+  };
+
   const handleDeviceImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -392,6 +453,12 @@ export default function Home() {
     setWalletNetwork(POLYGON_NETWORK);
     setMessage({ type: "info", text: "Wallet disconnected. Connect a Polygon wallet to continue." });
   };
+
+  useEffect(() => {
+    if (selectedAuction?.id) {
+      void fetchAuctionChat(selectedAuction.id);
+    }
+  }, [selectedAuction?.id]);
 
   useEffect(() => {
     let isMounted = true;
@@ -543,7 +610,7 @@ export default function Home() {
       }
       setAuctions((prev) => [...prev, data]);
       setSelectedId(data.id);
-      setAuctionForm({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "" });
+      setAuctionForm({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "", seller_contact: "", payment_instructions: "", pickup_location: "" });
       setShowSellerForm(false);
       setMessage({ type: "success", text: `Auction published: ${data.title}` });
     } catch (error) {
@@ -705,6 +772,26 @@ export default function Home() {
                   className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
                 />
               ))}
+              <input
+                required
+                value={auctionForm.seller_contact}
+                placeholder="Seller contact / preferred communication details"
+                onChange={(event) => setAuctionForm((prev) => ({ ...prev, seller_contact: event.target.value }))}
+                className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
+              />
+              <input
+                required
+                value={auctionForm.payment_instructions}
+                placeholder="Payment wallet or instructions for the winner"
+                onChange={(event) => setAuctionForm((prev) => ({ ...prev, payment_instructions: event.target.value }))}
+                className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
+              />
+              <input
+                value={auctionForm.pickup_location}
+                placeholder="Pickup / delivery location or shipping details"
+                onChange={(event) => setAuctionForm((prev) => ({ ...prev, pickup_location: event.target.value }))}
+                className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
+              />
               <div className="space-y-2 md:col-span-2">
                 <label className="block text-sm text-slate-300">Image source</label>
                 <div className="grid gap-3 md:grid-cols-[1fr_auto]">
@@ -927,6 +1014,15 @@ export default function Home() {
                       <h3 className="mt-2 text-3xl font-semibold">{selectedAuction.title}</h3>
                     </div>
                     <p className="text-slate-300">{selectedAuction.description}</p>
+                    <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/5 p-4 text-sm text-slate-200">
+                      <p className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">Payment & contact</p>
+                      <div className="mt-3 space-y-2">
+                        <div><span className="text-slate-400">Seller wallet:</span> {selectedAuction.owner_wallet ? formatMaskedAddress(selectedAuction.owner_wallet) : "Not disclosed"}</div>
+                        <div><span className="text-slate-400">Seller contact:</span> {selectedAuction.seller_contact || "Not shared yet"}</div>
+                        <div><span className="text-slate-400">Payment instructions:</span> {selectedAuction.payment_instructions || "No wallet payment instructions added yet."}</div>
+                        <div><span className="text-slate-400">Pickup / delivery:</span> {selectedAuction.pickup_location || "Delivery details will be shared after the auction closes."}</div>
+                      </div>
+                    </div>
                     <div className="grid grid-cols-3 gap-3 text-sm text-slate-300">
                       <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Current</span><div className="mt-2 text-lg font-semibold text-cyan-300">{formatMoney(selectedAuction.current_bid)}</div></div>
                       <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Minimum</span><div className="mt-2 text-lg font-semibold text-white">{formatMoney(selectedAuction.current_bid + 1)}</div></div>
@@ -967,6 +1063,43 @@ export default function Home() {
                           {auctionEnded ? "Auction ended" : !walletConnected ? "Connect wallet" : isSubmitting ? "Processing..." : "Place Bid"}
                         </button>
                       </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-slate-950/80 p-4">
+                      <div className="mb-3 flex items-center justify-between">
+                        <p className="text-[10px] uppercase tracking-[0.25em] text-cyan-300">Seller / winner chat</p>
+                        <span className="text-xs text-slate-400">{chatMessages.length} messages</span>
+                      </div>
+                      <div className="mb-3 max-h-52 space-y-2 overflow-y-auto pr-2">
+                        {chatMessages.length === 0 ? (
+                          <p className="text-sm text-slate-500">No messages yet. The seller and highest bidder can start chatting here.</p>
+                        ) : (
+                          chatMessages.map((message) => (
+                            <div key={message.id} className="rounded-xl border border-white/10 bg-slate-900 p-2">
+                              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                                <span>{message.sender || "Anonymous"}</span>
+                                <span>{new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                              </div>
+                              <p className="text-sm text-slate-200">{message.message}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      {walletConnected && (normalizeWalletAddress(selectedAuction.owner_wallet) === normalizeWalletAddress(walletAddress) || normalizeWalletAddress(selectedAuction.current_bidder_wallet) === normalizeWalletAddress(walletAddress)) ? (
+                        <div className="flex gap-2">
+                          <input
+                            value={chatInput}
+                            onChange={(event) => setChatInput(event.target.value)}
+                            placeholder="Message the seller or highest bidder"
+                            className="flex-1 rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white outline-none placeholder:text-slate-500"
+                          />
+                          <button type="button" onClick={sendChatMessage} className="rounded-xl bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950">
+                            Send
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400">Only the seller or the current winning bidder can access this chat.</p>
+                      )}
                     </div>
 
                     {message && (
