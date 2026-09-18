@@ -31,6 +31,7 @@ type Auction struct {
 	Description   string        `json:"description"`
 	Category      string        `json:"category"`
 	ImageURL      string        `json:"image_url"`
+	OwnerWallet   string        `json:"owner_wallet,omitempty"`
 	StartingPrice int64         `json:"starting_price"`
 	CurrentBid    int64         `json:"current_bid"`
 	CurrentBidder string        `json:"current_bidder,omitempty"`
@@ -67,6 +68,7 @@ type CreateAuctionRequest struct {
 	Description     string `json:"description"`
 	Category        string `json:"category"`
 	ImageURL        string `json:"image_url"`
+	OwnerWallet     string `json:"owner_wallet,omitempty"`
 	StartingPrice   int64  `json:"starting_price"`
 	DurationMinutes int    `json:"duration_minutes"`
 	DurationHours   int    `json:"duration_hours"`
@@ -272,6 +274,7 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 		Description:   strings.TrimSpace(req.Description),
 		Category:      strings.TrimSpace(req.Category),
 		ImageURL:      imageURL,
+		OwnerWallet:   normalizeWalletAddress(req.OwnerWallet),
 		StartingPrice: req.StartingPrice,
 		CurrentBid:    req.StartingPrice,
 		Status:        AuctionStatusUpcoming,
@@ -286,13 +289,18 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 	return cloneAuction(auction), nil
 }
 
-func (s *Store) deleteAuction(id int) error {
+func (s *Store) deleteAuction(id int, ownerWallet string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, ok := s.auctions[id]
+	auction, ok := s.auctions[id]
 	if !ok {
 		return errors.New("auction not found")
+	}
+	owner := normalizeWalletAddress(ownerWallet)
+	currentOwner := normalizeWalletAddress(auction.OwnerWallet)
+	if currentOwner == "" || owner == "" || !strings.EqualFold(currentOwner, owner) {
+		return errors.New("only the auction owner can delete this listing")
 	}
 	delete(s.auctions, id)
 	remainingBids := s.bids[:0]
@@ -590,8 +598,17 @@ func main() {
 			return
 		}
 		if r.Method == http.MethodDelete {
-			if err := store.deleteAuction(id); err != nil {
-				w.WriteHeader(http.StatusConflict)
+			ownerWallet := strings.TrimSpace(r.Header.Get("X-Owner-Wallet"))
+			if ownerWallet == "" {
+				var reqBody struct {
+					OwnerWallet string `json:"owner_wallet"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&reqBody); err == nil {
+					ownerWallet = reqBody.OwnerWallet
+				}
+			}
+			if err := store.deleteAuction(id, ownerWallet); err != nil {
+				w.WriteHeader(http.StatusForbidden)
 				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 				return
 			}

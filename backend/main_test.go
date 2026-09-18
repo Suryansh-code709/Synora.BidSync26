@@ -90,11 +90,11 @@ func TestStoreCreatesAuction(t *testing.T) {
 
 func TestStoreDeletesAuctionWithoutBids(t *testing.T) {
 	store := newStore()
-	auction, err := store.createAuction(CreateAuctionRequest{Title: "Delete me", Category: "Test", StartingPrice: 1000, DurationMinutes: 10})
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Delete me", Category: "Test", StartingPrice: 1000, DurationMinutes: 10, OwnerWallet: "0xABCDEF1234567890ABCDEF1234567890ABCDEF12"})
 	if err != nil {
 		t.Fatalf("unexpected error creating auction: %v", err)
 	}
-	if err := store.deleteAuction(auction.ID); err != nil {
+	if err := store.deleteAuction(auction.ID, "0xabcdef1234567890abcdef1234567890abcdef12"); err != nil {
 		t.Fatalf("unexpected delete error: %v", err)
 	}
 	if _, ok := store.getAuction(auction.ID); ok {
@@ -102,16 +102,34 @@ func TestStoreDeletesAuctionWithoutBids(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsDeleteByNonOwner(t *testing.T) {
+	store := newStore()
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Owner only", Category: "Test", StartingPrice: 2500, DurationMinutes: 10, OwnerWallet: "0x1111111111111111111111111111111111111111"})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	if err := store.deleteAuction(auction.ID, "0x2222222222222222222222222222222222222222"); err == nil {
+		t.Fatalf("expected non-owner delete to fail")
+	}
+	if _, ok := store.getAuction(auction.ID); !ok {
+		t.Fatalf("expected auction %d to remain after unauthorized delete", auction.ID)
+	}
+}
+
 func TestStoreDeletesAuctionWithBids(t *testing.T) {
 	store := newStore()
-	if _, err := store.placeBid(BidRequest{AuctionID: 1, Bidder: "user1", Amount: 26000, IdempotencyKey: "delete-protection"}); err != nil {
+	auction, err := store.createAuction(CreateAuctionRequest{Title: "Delete my sold item", Category: "Test", StartingPrice: 3000, DurationMinutes: 10, OwnerWallet: "0x3333333333333333333333333333333333333333"})
+	if err != nil {
+		t.Fatalf("unexpected error creating auction: %v", err)
+	}
+	if _, err := store.placeBid(BidRequest{AuctionID: auction.ID, Bidder: "user1", Amount: 35000, IdempotencyKey: "delete-protection"}); err != nil {
 		t.Fatalf("unexpected bid error: %v", err)
 	}
-	if err := store.deleteAuction(1); err != nil {
+	if err := store.deleteAuction(auction.ID, "0x3333333333333333333333333333333333333333"); err != nil {
 		t.Fatalf("expected auction with bids to be deleted: %v", err)
 	}
-	if _, ok := store.getAuction(1); ok {
-		t.Fatalf("expected auction 1 to be deleted")
+	if _, ok := store.getAuction(auction.ID); ok {
+		t.Fatalf("expected auction %d to be deleted", auction.ID)
 	}
 }
 

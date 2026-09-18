@@ -9,6 +9,7 @@ type Auction = {
   description: string;
   category: string;
   image_url: string;
+  owner_wallet?: string;
   starting_price: number;
   current_bid: number;
   current_bidder?: string;
@@ -80,6 +81,13 @@ const formatMoney = (value: number) =>
   }).format(value);
 
 const formatBidLabel = (value: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value)}`;
+
+const normalizeWalletAddress = (address?: string) => {
+  if (!address) return "";
+  const trimmed = address.trim();
+  if (!trimmed) return "";
+  return trimmed.startsWith("0x") || trimmed.startsWith("0X") ? trimmed.toLowerCase() : `0x${trimmed.toLowerCase()}`;
+};
 
 const formatMaskedAddress = (address: string) => {
   if (!address) return "Anonymous wallet";
@@ -166,6 +174,8 @@ export default function Home() {
     () => auctions.find((auction) => auction.id === selectedId) ?? auctions[0],
     [auctions, selectedId],
   );
+
+  const isAuctionOwner = selectedAuction ? !!selectedAuction.owner_wallet && !!walletAddress && normalizeWalletAddress(selectedAuction.owner_wallet) === normalizeWalletAddress(walletAddress) : false;
 
   const endedAuctions = useMemo(
     () => [...auctions].filter((auction) => auction.status === "ended" || new Date(auction.ends_at).getTime() <= Date.now()),
@@ -452,6 +462,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...auctionForm,
+          owner_wallet: walletAddress || "",
           starting_price: Number(auctionForm.starting_price),
           duration_minutes: Number(auctionForm.duration_minutes),
         }),
@@ -479,9 +490,26 @@ export default function Home() {
   };
 
   const deleteAuction = async () => {
-    if (!selectedAuction || !window.confirm(`Delete "${selectedAuction.title}"? This cannot be undone.`)) return;
+    if (!selectedAuction) return;
+    if (!walletConnected || !walletAddress) {
+      setMessage({ type: "error", text: "Connect your wallet to delete a listing you own." });
+      return;
+    }
+    const isOwner = selectedAuction.owner_wallet ? normalizeWalletAddress(selectedAuction.owner_wallet) === normalizeWalletAddress(walletAddress) : false;
+    if (!isOwner) {
+      setMessage({ type: "error", text: "Only the owner of this item can delete it." });
+      return;
+    }
+    if (!window.confirm(`Delete "${selectedAuction.title}"? This cannot be undone.`)) return;
     try {
-      const response = await fetch(`${API_URL}/api/auctions/${selectedAuction.id}`, { method: "DELETE" });
+      const response = await fetch(`${API_URL}/api/auctions/${selectedAuction.id}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Owner-Wallet": walletAddress,
+        },
+        body: JSON.stringify({ owner_wallet: walletAddress }),
+      });
       const responseText = await response.text();
       if (!response.ok) {
         let error = "Unable to delete auction";
@@ -784,9 +812,11 @@ export default function Home() {
                       >
                         {watchlist.includes(selectedAuction.id) ? "★ Remove favorite" : "☆ Add favorite"}
                       </button>
-                      <button type="button" onClick={deleteAuction} className="rounded-lg border border-rose-500/30 px-3 py-2 text-xs text-rose-200 hover:bg-rose-500/10">
-                        Delete listing
-                      </button>
+                      {isAuctionOwner && (
+                        <button type="button" onClick={deleteAuction} className="rounded-lg border border-rose-500/30 px-3 py-2 text-xs text-rose-200 hover:bg-rose-500/10">
+                          Delete listing
+                        </button>
+                      )}
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{selectedAuction.category}</p>
