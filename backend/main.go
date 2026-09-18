@@ -35,6 +35,7 @@ type Auction struct {
 	SellerContact       string        `json:"seller_contact,omitempty"`
 	PaymentInstructions string        `json:"payment_instructions,omitempty"`
 	PickupLocation      string        `json:"pickup_location,omitempty"`
+	Currency            string        `json:"currency,omitempty"`
 	StartingPrice       int64         `json:"starting_price"`
 	CurrentBid          int64         `json:"current_bid"`
 	CurrentBidder       string        `json:"current_bidder,omitempty"`
@@ -76,6 +77,7 @@ type CreateAuctionRequest struct {
 	SellerContact       string `json:"seller_contact,omitempty"`
 	PaymentInstructions string `json:"payment_instructions,omitempty"`
 	PickupLocation      string `json:"pickup_location,omitempty"`
+	Currency            string `json:"currency,omitempty"`
 	StartingPrice       int64  `json:"starting_price"`
 	DurationMinutes     int    `json:"duration_minutes"`
 	DurationHours       int    `json:"duration_hours"`
@@ -211,6 +213,18 @@ func (s *Store) getAuction(id int) (Auction, bool) {
 	return cloneAuction(*updated), true
 }
 
+func normalizeCurrency(code string) string {
+	candidate := strings.ToUpper(strings.TrimSpace(code))
+	if candidate == "" {
+		return "INR"
+	}
+	supported := map[string]struct{}{"INR": {}, "USD": {}, "EUR": {}, "BTC": {}, "ETH": {}, "USDT": {}, "MATIC": {}}
+	if _, ok := supported[candidate]; !ok {
+		return "INR"
+	}
+	return candidate
+}
+
 func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 	if strings.TrimSpace(req.Title) == "" {
 		return Auction{}, errors.New("title required")
@@ -221,6 +235,7 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 	if req.StartingPrice <= 0 {
 		return Auction{}, errors.New("starting price must be positive")
 	}
+	currency := normalizeCurrency(req.Currency)
 
 	durationMinutes := req.DurationMinutes
 	if durationMinutes <= 0 && req.DurationHours > 0 {
@@ -255,6 +270,7 @@ func (s *Store) createAuction(req CreateAuctionRequest) (Auction, error) {
 		SellerContact:       strings.TrimSpace(req.SellerContact),
 		PaymentInstructions: strings.TrimSpace(req.PaymentInstructions),
 		PickupLocation:      strings.TrimSpace(req.PickupLocation),
+		Currency:            currency,
 		StartingPrice:       req.StartingPrice,
 		CurrentBid:          req.StartingPrice,
 		Status:              AuctionStatusUpcoming,
@@ -729,6 +745,29 @@ func main() {
 				return
 			}
 		}
+	})
+
+	mux.HandleFunc("/api/rates", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		rateMap := map[string]float64{"INR": 83.5, "USD": 1.0, "EUR": 0.92, "BTC": 0.000013, "ETH": 0.00022, "USDT": 1.0, "MATIC": 1.0}
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get("https://api.coingecko.com/api/v3/simple/price?ids=matic-network,bitcoin,ethereum,tether&vs_currencies=usd,inr,eur,btc,eth")
+		if err == nil {
+			defer resp.Body.Close()
+			var payload map[string]map[string]float64
+			if json.NewDecoder(resp.Body).Decode(&payload) == nil {
+				if data, ok := payload["matic-network"]; ok {
+					if data["usd"] > 0 { rateMap["USD"] = data["usd"] }
+					if data["inr"] > 0 { rateMap["INR"] = data["inr"] }
+					if data["eur"] > 0 { rateMap["EUR"] = data["eur"] }
+					if data["btc"] > 0 { rateMap["BTC"] = data["btc"] }
+					if data["eth"] > 0 { rateMap["ETH"] = data["eth"] }
+				}
+				if data, ok := payload["tether"]; ok && data["usd"] > 0 { rateMap["USDT"] = data["usd"] }
+			}
+		}
+		json.NewEncoder(w).Encode(rateMap)
 	})
 
 	mux.HandleFunc("/api/metrics", func(w http.ResponseWriter, r *http.Request) {

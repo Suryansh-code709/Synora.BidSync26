@@ -13,6 +13,7 @@ type Auction = {
   seller_contact?: string;
   payment_instructions?: string;
   pickup_location?: string;
+  currency?: string;
   starting_price: number;
   current_bid: number;
   current_bidder?: string;
@@ -52,6 +53,7 @@ type AuctionForm = {
   seller_contact: string;
   payment_instructions: string;
   pickup_location: string;
+  currency: string;
 };
 
 type Metrics = {
@@ -80,14 +82,47 @@ const filterOptions: { id: FilterMode; label: string }[] = [
   { id: "ended", label: "Ended" },
 ];
 
-const formatMoney = (value: number) =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(value);
+const currencyOptions = ["INR", "USD", "EUR", "BTC", "ETH", "USDT", "MATIC"] as const;
 
-const formatBidLabel = (value: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value)}`;
+const formatMoney = (value: number, currency = "INR") => {
+  const normalized = (currency || "INR").toUpperCase();
+  if (normalized === "BTC" || normalized === "ETH" || normalized === "USDT" || normalized === "MATIC") {
+    const decimals = normalized === "BTC" ? 6 : 5;
+    return `${Number(value).toFixed(decimals)} ${normalized}`;
+  }
+
+  const formatter = new Intl.NumberFormat(normalized === "USD" ? "en-US" : normalized === "EUR" ? "en-DE" : "en-IN", {
+    style: "currency",
+    currency: normalized,
+    maximumFractionDigits: 0,
+  });
+  return formatter.format(value);
+};
+
+const formatBidLabel = (value: number, currency = "INR") => formatMoney(value, currency);
+
+const getBalanceInSelectedCurrency = (balance: bigint | null, currency: string, rateMap: Record<string, number>) => {
+  if (balance === null) return null;
+  const normalized = (currency || "INR").toUpperCase();
+  const maticBalance = Number(formatEther(balance));
+  switch (normalized) {
+    case "INR":
+      return maticBalance * (rateMap.INR ?? 83.5);
+    case "USD":
+      return maticBalance * (rateMap.USD ?? 1);
+    case "EUR":
+      return maticBalance * (rateMap.EUR ?? 0.92);
+    case "BTC":
+      return maticBalance * (rateMap.BTC ?? 0.000013);
+    case "ETH":
+      return maticBalance * (rateMap.ETH ?? 0.00022);
+    case "USDT":
+      return maticBalance * (rateMap.USDT ?? 1);
+    case "MATIC":
+    default:
+      return maticBalance;
+  }
+};
 
 const normalizeWalletAddress = (address?: string) => {
   if (!address) return "";
@@ -189,6 +224,7 @@ export default function Home() {
     seller_contact: "",
     payment_instructions: "",
     pickup_location: "",
+    currency: "INR",
   });
   const [isPublishing, setIsPublishing] = useState(false);
   const [stats, setStats] = useState<Metrics>({
@@ -311,6 +347,16 @@ export default function Home() {
       if (response.ok) setStats((await response.json()) as Metrics);
     } catch {
       // Metrics are supplementary to the auction experience.
+    }
+  };
+
+  const fetchWalletRates = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/rates`);
+      if (!response.ok) return {} as Record<string, number>;
+      return (await response.json()) as Record<string, number>;
+    } catch {
+      return { INR: 83.5, USD: 1, EUR: 0.92, BTC: 0.000013, ETH: 0.00022, USDT: 1, MATIC: 1 } as Record<string, number>;
     }
   };
 
@@ -521,8 +567,15 @@ export default function Home() {
       setMessage({ type: "error", text: "Connect your Polygon wallet to participate anonymously in the market." });
       return;
     }
-    if (walletBalance !== null && amount > Number(formatEther(walletBalance))) {
-      setMessage({ type: "error", text: `Insufficient wallet balance. You only have ${Number(formatEther(walletBalance)).toFixed(3)} MATIC available.` });
+
+    const selectedCurrency = (selectedAuction.currency || "INR").toUpperCase();
+    const rateMap = await fetchWalletRates();
+    const availableBalance = getBalanceInSelectedCurrency(walletBalance, selectedCurrency, rateMap);
+    if (walletBalance !== null && availableBalance !== null && amount > availableBalance) {
+      setMessage({
+        type: "error",
+        text: `Insufficient wallet balance. You only have ${formatMoney(availableBalance, selectedCurrency)} available in ${selectedCurrency}.`,
+      });
       return;
     }
 
@@ -568,13 +621,13 @@ export default function Home() {
           bidder: publicBidder,
           createdAt: Date.now(),
         });
-        setMessage({ type: "success", text: `Wallet verified bid accepted for ${formatMoney(data.current_bid ?? amount)}` });
+        setMessage({ type: "success", text: `Wallet verified bid accepted for ${formatMoney(data.current_bid ?? amount, selectedAuction.currency || "INR")}` });
         await fetchAuctions();
       } else {
         const minimum = data.minimum_next_bid ?? selectedAuction.current_bid;
         setMessage({
           type: "error",
-          text: data.message || data.error || `Bid too low. Minimum acceptable bid: ${formatMoney(minimum)}.`,
+          text: data.message || data.error || `Bid too low. Minimum acceptable bid: ${formatMoney(minimum, selectedAuction.currency || "INR")}.`,
         });
       }
     } catch (error) {
@@ -594,6 +647,7 @@ export default function Home() {
         body: JSON.stringify({
           ...auctionForm,
           owner_wallet: walletAddress || "",
+          currency: (auctionForm.currency || "INR").toUpperCase(),
           starting_price: Number(auctionForm.starting_price),
           duration_minutes: Number(auctionForm.duration_minutes),
         }),
@@ -610,7 +664,7 @@ export default function Home() {
       }
       setAuctions((prev) => [...prev, data]);
       setSelectedId(data.id);
-      setAuctionForm({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "", seller_contact: "", payment_instructions: "", pickup_location: "" });
+      setAuctionForm({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "", seller_contact: "", payment_instructions: "", pickup_location: "", currency: "INR" });
       setShowSellerForm(false);
       setMessage({ type: "success", text: `Auction published: ${data.title}` });
     } catch (error) {
@@ -758,7 +812,7 @@ export default function Home() {
               {([
                 ["title", "Item title", "text"],
                 ["category", "Category", "text"],
-                ["starting_price", "Starting price (INR)", "number"],
+                ["starting_price", "Starting price", "number"],
                 ["duration_minutes", "Duration in minutes (minimum 10)", "number"],
               ] as const).map(([field, placeholder, type]) => (
                 <input
@@ -772,6 +826,18 @@ export default function Home() {
                   className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
                 />
               ))}
+              <div className="md:col-span-2">
+                <label className="mb-2 block text-sm text-slate-300">Quote currency</label>
+                <select
+                  value={auctionForm.currency}
+                  onChange={(event) => setAuctionForm((prev) => ({ ...prev, currency: event.target.value }))}
+                  className="w-full rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none"
+                >
+                  {currencyOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
               <input
                 required
                 value={auctionForm.seller_contact}
@@ -824,7 +890,7 @@ export default function Home() {
 
         <section className="mb-8 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           {[
-            ["Current bid", selectedAuction ? formatMoney(selectedAuction.current_bid) : "₹0"],
+            ["Current bid", selectedAuction ? formatMoney(selectedAuction.current_bid, selectedAuction.currency || "INR") : "₹0"],
             ["Load / sec", `${Number(stats.requests_per_second ?? 0).toFixed(2)}`],
             ["Bid throughput", `${Number(stats.bids_per_second ?? 0).toFixed(2)}/s`],
             ["Successful bids", stats.successful_bids],
@@ -924,7 +990,7 @@ export default function Home() {
                       </div>
                       <h2 className="text-base font-medium text-white">{auction.title}</h2>
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-300">{formatMoney(auction.current_bid)}</span>
+                        <span className="text-slate-300">{formatMoney(auction.current_bid, auction.currency || "INR")}</span>
                         <span className="text-cyan-300">{getAuctionCountdown(auction)}</span>
                       </div>
                     </div>
@@ -959,7 +1025,7 @@ export default function Home() {
                       </div>
                       <h4 className="text-base font-medium text-white">{auction.title}</h4>
                       <p className="mt-2 text-sm font-medium text-amber-200">Winner: {auction.current_bidder || "No winner"}</p>
-                      <p className="mt-1 text-sm text-slate-300">Final bid: {formatMoney(auction.current_bid)}</p>
+                      <p className="mt-1 text-sm text-slate-300">Final bid: {formatMoney(auction.current_bid, auction.currency || "INR")}</p>
                     </button>
                   ))}
                 </div>
@@ -991,8 +1057,8 @@ export default function Home() {
                       <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3">
                         <p className="text-[10px] uppercase tracking-[0.25em] text-amber-200">Auction winner</p>
                         <h4 className="mt-2 text-2xl font-semibold text-white">{selectedAuction.current_bidder || "No winner"}</h4>
-                        <p className="mt-1 text-sm text-amber-100">Winning bid: {formatMoney(selectedAuction.current_bid)}</p>
-                        <p className="mt-1 text-xs text-slate-300">Maximum bid reached: {formatMoney(selectedAuction.current_bid)}</p>
+                        <p className="mt-1 text-sm text-amber-100">Winning bid: {formatMoney(selectedAuction.current_bid, selectedAuction.currency || "INR")}</p>
+                        <p className="mt-1 text-xs text-slate-300">Maximum bid reached: {formatMoney(selectedAuction.current_bid, selectedAuction.currency || "INR")}</p>
                       </div>
                     )}
                     <div className="flex items-center gap-2">
@@ -1024,8 +1090,8 @@ export default function Home() {
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-3 text-sm text-slate-300">
-                      <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Current</span><div className="mt-2 text-lg font-semibold text-cyan-300">{formatMoney(selectedAuction.current_bid)}</div></div>
-                      <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Minimum</span><div className="mt-2 text-lg font-semibold text-white">{formatMoney(selectedAuction.current_bid + 1)}</div></div>
+                      <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Current</span><div className="mt-2 text-lg font-semibold text-cyan-300">{formatMoney(selectedAuction.current_bid, selectedAuction.currency || "INR")}</div></div>
+                      <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Minimum</span><div className="mt-2 text-lg font-semibold text-white">{formatMoney(selectedAuction.current_bid + 1, selectedAuction.currency || "INR")}</div></div>
                       <div className="rounded-xl border border-white/10 bg-slate-800 p-3"><span className="text-slate-400">Bids</span><div className="mt-2 text-lg font-semibold text-white">{selectedAuction.bid_count || 0}</div></div>
                     </div>
 
@@ -1040,7 +1106,7 @@ export default function Home() {
                               onClick={() => placeBid(value, makeBidKey(`qid_${value}`))}
                               className="flex-1 rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:border-cyan-500/40 hover:bg-cyan-500/10"
                             >
-                              {formatMoney(value)}
+                              {formatMoney(value, selectedAuction.currency || "INR")}
                             </button>
                           );
                         })}
@@ -1060,7 +1126,7 @@ export default function Home() {
                           disabled={isSubmitting || auctionEnded || !walletConnected}
                           className="rounded-xl bg-cyan-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {auctionEnded ? "Auction ended" : !walletConnected ? "Connect wallet" : isSubmitting ? "Processing..." : "Place Bid"}
+                          {auctionEnded ? "Auction ended" : !walletConnected ? "Connect wallet" : isSubmitting ? "Processing..." : `Place Bid (${selectedAuction.currency || "INR"})`}
                         </button>
                       </div>
                     </div>
