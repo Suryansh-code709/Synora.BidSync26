@@ -1,5 +1,6 @@
 "use client";
 
+import { BrowserProvider } from "ethers";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Auction = {
@@ -58,10 +59,10 @@ type Metrics = {
   last_updated?: string;
 };
 
-type DemoMode = "manual" | "stress";
 type FilterMode = "all" | "active" | "ending-soon" | "upcoming" | "ended";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+const POLYGON_NETWORK = "Polygon";
 
 const filterOptions: { id: FilterMode; label: string }[] = [
   { id: "all", label: "All" },
@@ -80,13 +81,15 @@ const formatMoney = (value: number) =>
 
 const formatBidLabel = (value: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value)}`;
 
-const formatRelativeTime = (date: string) => {
-  const diff = new Date(date).getTime() - Date.now();
-  const totalSeconds = Math.max(0, Math.floor(diff / 1000));
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${m}m ${s}s`;
+const formatMaskedAddress = (address: string) => {
+  if (!address) return "Anonymous wallet";
+  const trimmed = address.trim();
+  if (trimmed.length <= 10) return trimmed;
+  return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
 };
+
+const buildWalletMessage = (auctionId: number, amount: number, requestKey: string) =>
+  `BidSync market approval\nAuction:${auctionId}\nBid:${amount}\nKey:${requestKey}`;
 
 const getAuctionStartCountdown = (auction: Auction) => {
   const remainingMs = new Date(auction.starts_at).getTime() - Date.now();
@@ -117,7 +120,7 @@ const makeBidKey = (prefix: string) => {
   return `${prefix}_${timePart}`;
 };
 
-const imageStyle = (imageURL: string) => imageURL ? { backgroundImage: `url("${imageURL.replaceAll('"', '%22')}")` } : undefined;
+const imageStyle = (imageURL: string) => (imageURL ? { backgroundImage: `url("${imageURL}")` } : undefined);
 
 export default function Home() {
   const [auctions, setAuctions] = useState<Auction[]>([]);
@@ -128,15 +131,33 @@ export default function Home() {
   const [liveBids, setLiveBids] = useState<LiveBid[]>([]);
   const [liveClock, setLiveClock] = useState(() => Date.now());
   const [showSellerForm, setShowSellerForm] = useState(false);
-  const [auctionForm, setAuctionForm] = useState<AuctionForm>({ title: "", description: "", category: "", starting_price: "", duration_minutes: "30", image_url: "" });
+  const [auctionForm, setAuctionForm] = useState<AuctionForm>({
+    title: "",
+    description: "",
+    category: "",
+    starting_price: "",
+    duration_minutes: "30",
+    image_url: "",
+  });
   const [isPublishing, setIsPublishing] = useState(false);
-  const [stats, setStats] = useState<Metrics>({ total_requests: 0, successful_bids: 0, rejected_bids: 0, connections: 0, active_auctions: 0, requests_per_second: 0, bids_per_second: 0, load_index: 0 });
+  const [stats, setStats] = useState<Metrics>({
+    total_requests: 0,
+    successful_bids: 0,
+    rejected_bids: 0,
+    connections: 0,
+    active_auctions: 0,
+    requests_per_second: 0,
+    bids_per_second: 0,
+    load_index: 0,
+  });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [demoMode, setDemoMode] = useState<DemoMode>("manual");
   const [searchTerm, setSearchTerm] = useState("");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [watchlist, setWatchlist] = useState<number[]>([]);
-  const demoModeRef = useRef<DemoMode>("manual");
+  const [walletConnected, setWalletConnected] = useState(false);
+  const [walletAddress, setWalletAddress] = useState("");
+  const [walletNetwork, setWalletNetwork] = useState(POLYGON_NETWORK);
+  const [connectingWallet, setConnectingWallet] = useState(false);
   const selectedIdRef = useRef<number>(selectedId);
 
   const selectedAuction = useMemo(
@@ -168,10 +189,6 @@ export default function Home() {
       })
       .sort((a, b) => new Date(a.ends_at).getTime() - new Date(b.ends_at).getTime());
   }, [auctions, filterMode, searchTerm]);
-
-  useEffect(() => {
-    demoModeRef.current = demoMode;
-  }, [demoMode]);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -254,6 +271,49 @@ export default function Home() {
     reader.readAsDataURL(file);
   };
 
+  const connectWallet = async () => {
+    if (typeof window === "undefined") {
+      setMessage({ type: "error", text: "Wallet connection is only available in the browser." });
+      return;
+    }
+
+    const ethereum = (window as any).ethereum;
+    if (!ethereum) {
+      setMessage({ type: "error", text: "MetaMask or another Polygon wallet is required." });
+      return;
+    }
+
+    try {
+      setConnectingWallet(true);
+      const provider = new BrowserProvider(ethereum);
+      const accounts = await provider.send("eth_requestAccounts", []);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      const network = await provider.getNetwork();
+      setWalletAddress(address);
+      setWalletNetwork(network?.name ? network.name : POLYGON_NETWORK);
+      setWalletConnected(true);
+      setMessage({ type: "success", text: `Wallet connected: ${formatMaskedAddress(address)}` });
+      if (accounts?.length === 0) {
+        setWalletConnected(false);
+      }
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Wallet connection was rejected.",
+      });
+    } finally {
+      setConnectingWallet(false);
+    }
+  };
+
+  const disconnectWallet = () => {
+    setWalletConnected(false);
+    setWalletAddress("");
+    setWalletNetwork(POLYGON_NETWORK);
+    setMessage({ type: "info", text: "Wallet disconnected. Connect a Polygon wallet to continue." });
+  };
+
   useEffect(() => {
     let isMounted = true;
 
@@ -290,36 +350,15 @@ export default function Home() {
           } else if (payload.auction.current_bidder && payload.auction.current_bid) {
             syncLiveBidFromAuction(payload.auction);
           }
-          if (demoModeRef.current === "stress") {
-            setMessage({ type: "success", text: `Live update: ${payload.auction.title} moved to ${formatMoney(payload.auction.current_bid)}.` });
-          }
         }
       } catch {
-        // ignore malformed SSE payloads in demo mode
+        // ignore malformed SSE payloads in the market stream
       }
     };
 
     const interval = setInterval(() => {
       setLiveClock(Date.now());
-      if (demoModeRef.current === "stress") {
-        setAuctions((prev) => {
-          if (prev.length === 0) return prev;
-          const target = prev.find((auction) => auction.id === selectedIdRef.current) ?? prev[0];
-          const nextBid = target.current_bid + 1000;
-          const nextListing: Auction = {
-            ...target,
-            current_bid: nextBid,
-            current_bidder: "Market Simulator",
-            bid_count: (target.bid_count ?? 0) + 1,
-            status: "active",
-          };
-          upsertLiveBid({ id: `stress_${Date.now()}`, amount: nextBid, bidder: "Market Simulator", createdAt: Date.now() });
-          return prev.map((auction) => (auction.id === target.id ? nextListing : auction));
-        });
-        setMessage({ type: "success", text: "Market stress mode: bids are moving automatically from the 5,000-user simulation." });
-      } else {
-        void fetchAuctions();
-      }
+      void fetchAuctions();
       void fetchMetrics();
     }, 3500);
 
@@ -332,16 +371,36 @@ export default function Home() {
 
   const placeBid = async (amount: number, key?: string) => {
     if (!selectedAuction) return;
+    if (!walletConnected || !walletAddress) {
+      setMessage({ type: "error", text: "Connect your Polygon wallet to participate anonymously in the market." });
+      return;
+    }
+
     setIsSubmitting(true);
-    const requestKey = key ?? makeBidKey("demo");
+    const requestKey = key ?? makeBidKey("market");
+    const walletMessage = buildWalletMessage(selectedAuction.id, amount, requestKey);
+
     try {
+      const ethereum = (window as any).ethereum;
+      if (!ethereum) throw new Error("Wallet provider not found.");
+      const provider = new BrowserProvider(ethereum);
+      const signer = await provider.getSigner();
+      const signature = await signer.signMessage(walletMessage);
+
       const response = await fetch(`${API_URL}/api/auctions/${selectedAuction.id}/bids`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Idempotency-Key": requestKey,
         },
-        body: JSON.stringify({ bidder: "Demo User", amount, idempotency_key: requestKey }),
+        body: JSON.stringify({
+          bidder: formatMaskedAddress(walletAddress),
+          amount,
+          idempotency_key: requestKey,
+          wallet_address: walletAddress,
+          wallet_network: walletNetwork,
+          signature,
+        }),
       });
       const responseText = await response.text();
       let data: BidResult & { error?: string };
@@ -354,10 +413,10 @@ export default function Home() {
         upsertLiveBid({
           id: String(data.bid_id ?? requestKey),
           amount: data.current_bid ?? amount,
-          bidder: "Demo User",
+          bidder: formatMaskedAddress(walletAddress),
           createdAt: Date.now(),
         });
-        setMessage({ type: "success", text: `✓ BID ACCEPTED\n${formatMoney(data.current_bid ?? amount)}` });
+        setMessage({ type: "success", text: `Wallet verified bid accepted for ${formatMoney(data.current_bid ?? amount)}` });
         await fetchAuctions();
       } else {
         const minimum = data.minimum_next_bid ?? selectedAuction.current_bid;
@@ -367,7 +426,7 @@ export default function Home() {
         });
       }
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "Bid request failed. Please retry." });
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "Wallet bid failed. Please retry." });
     } finally {
       setIsSubmitting(false);
     }
@@ -432,48 +491,48 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_30%),linear-gradient(180deg,_#020817_0%,_#0f172a_100%)] text-white">
       <div className="mx-auto max-w-7xl px-4 py-6 lg:px-8">
-        <header className="mb-6 flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-4 backdrop-blur md:flex-row md:items-center md:justify-between">
+        <header className="mb-6 flex flex-col gap-4 rounded-[28px] border border-white/10 bg-slate-900/70 p-4 shadow-[0_24px_80px_rgba(14,165,233,0.12)] backdrop-blur md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-cyan-300">BidSync</p>
-            <h1 className="mt-2 text-3xl font-semibold">Live auction market</h1>
+            <p className="text-xs uppercase tracking-[0.4em] text-cyan-300">BidSync</p>
+            <h1 className="mt-2 text-3xl font-semibold">Anonymous Polygon marketplace</h1>
           </div>
+
           <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
-            <div className="inline-flex rounded-full border border-white/10 bg-slate-900/80 p-1">
-              {[
-                { id: "manual", label: "Normal mode" },
-                { id: "stress", label: "5,000-user demo" },
-              ].map((mode) => (
-                <button
-                  key={mode.id}
-                  type="button"
-                  onClick={() => setDemoMode(mode.id as DemoMode)}
-                  className={`rounded-full px-3 py-1.5 transition ${demoMode === mode.id ? "bg-cyan-500 text-slate-950" : "text-slate-300 hover:bg-white/5"}`}
-                >
-                  {mode.label}
-                </button>
-              ))}
-            </div>
-            <button type="button" onClick={() => setShowSellerForm((open) => !open)} className="rounded-full border border-cyan-400/40 px-3 py-1 text-cyan-200 hover:bg-cyan-400/10">
+            <button
+              type="button"
+              onClick={walletConnected ? disconnectWallet : connectWallet}
+              disabled={connectingWallet}
+              className="rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {connectingWallet ? "Connecting..." : walletConnected ? "Wallet connected" : "Connect Polygon wallet"}
+            </button>
+
+            {walletConnected && (
+              <span className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-1 text-emerald-200">
+                {formatMaskedAddress(walletAddress)} • {walletNetwork}
+              </span>
+            )}
+
+            <button type="button" onClick={() => setShowSellerForm((open) => !open)} className="rounded-full border border-cyan-400/40 bg-cyan-500/10 px-3 py-1 text-cyan-200 hover:bg-cyan-500/20">
               {showSellerForm ? "Close seller form" : "List an item"}
             </button>
-            <button type="button" onClick={refreshAll} className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1 text-slate-200 hover:bg-white/5">
+            <button type="button" onClick={refreshAll} className="rounded-full border border-white/10 bg-slate-950/70 px-3 py-1 text-slate-200 hover:bg-white/5">
               Refresh market
             </button>
             <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 ${connected ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-rose-500/40 bg-rose-500/10 text-rose-300"}`}>
               <span className={`h-2.5 w-2.5 rounded-full ${connected ? "bg-emerald-400" : "bg-rose-400"}`} />
-              {connected ? "Realtime connected" : "Reconnect in progress"}
+              {connected ? "Realtime connected" : "Reconnect"}
             </span>
-            <span className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1">{stats.connections} live connections</span>
           </div>
         </header>
 
         {showSellerForm && (
-          <form onSubmit={publishAuction} className="mb-6 rounded-3xl border border-cyan-400/20 bg-cyan-400/5 p-5">
+          <form onSubmit={publishAuction} className="mb-6 rounded-[28px] border border-cyan-400/20 bg-cyan-500/5 p-5">
             <div className="mb-4">
               <p className="text-xs uppercase tracking-[0.25em] text-cyan-300">Seller workspace</p>
-              <h2 className="mt-2 text-2xl font-semibold">Publish a new auction</h2>
+              <h2 className="mt-2 text-2xl font-semibold">Publish a new listing</h2>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               {([
@@ -482,7 +541,16 @@ export default function Home() {
                 ["starting_price", "Starting price (INR)", "number"],
                 ["duration_minutes", "Duration in minutes (minimum 10)", "number"],
               ] as const).map(([field, placeholder, type]) => (
-                <input key={field} required value={auctionForm[field]} type={type} min={field === "duration_minutes" ? 10 : 1} placeholder={placeholder} onChange={(event) => setAuctionForm((prev) => ({ ...prev, [field]: event.target.value }))} className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2" />
+                <input
+                  key={field}
+                  required
+                  value={auctionForm[field]}
+                  type={type}
+                  min={field === "duration_minutes" ? 10 : 1}
+                  placeholder={placeholder}
+                  onChange={(event) => setAuctionForm((prev) => ({ ...prev, [field]: event.target.value }))}
+                  className="rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
+                />
               ))}
               <div className="space-y-2 md:col-span-2">
                 <label className="block text-sm text-slate-300">Image source</label>
@@ -500,11 +568,16 @@ export default function Home() {
                   </label>
                 </div>
               </div>
-              <textarea required value={auctionForm.description} placeholder="Describe the item" onChange={(event) => setAuctionForm((prev) => ({ ...prev, description: event.target.value }))} className="min-h-24 rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2" />
+              <textarea
+                required
+                value={auctionForm.description}
+                placeholder="Describe the item"
+                onChange={(event) => setAuctionForm((prev) => ({ ...prev, description: event.target.value }))}
+                className="min-h-24 rounded-xl border border-white/10 bg-slate-900 px-4 py-3 text-white outline-none placeholder:text-slate-500 md:col-span-2"
+              />
             </div>
-            <p className="mt-3 text-xs text-slate-400">Use either a public image URL or upload an image from your device. Leave both empty to keep the image area blank.</p>
             <button disabled={isPublishing} type="submit" className="mt-4 rounded-xl bg-cyan-500 px-5 py-3 font-semibold text-slate-950 disabled:opacity-50">
-              {isPublishing ? "Publishing..." : "Publish auction"}
+              {isPublishing ? "Publishing..." : "Publish listing"}
             </button>
           </form>
         )}
@@ -517,9 +590,9 @@ export default function Home() {
             ["Successful bids", stats.successful_bids],
             ["Connections", stats.connections],
           ].map(([label, value]) => (
-            <div key={label} className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-2xl shadow-slate-950/40">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{label}</p>
-              <p className="mt-3 text-xl font-semibold text-white">{value}</p>
+            <div key={String(label)} className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-2xl shadow-slate-950/40">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{String(label)}</p>
+              <p className="mt-3 text-xl font-semibold text-white">{String(value)}</p>
             </div>
           ))}
         </section>
@@ -527,7 +600,7 @@ export default function Home() {
         <section className="mb-8 grid gap-4 md:grid-cols-2">
           <div className="rounded-2xl border border-white/10 bg-slate-900/70 p-4">
             <div className="mb-3 flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">System load</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Market load</p>
               <span className="text-sm text-cyan-300">{Number(stats.load_index ?? 0).toFixed(0)}%</span>
             </div>
             <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
@@ -554,7 +627,7 @@ export default function Home() {
                   <input
                     value={searchTerm}
                     onChange={(event) => setSearchTerm(event.target.value)}
-                    placeholder="Search auction, category, or item"
+                    placeholder="Search item, category, or description"
                     className="w-full border-0 bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
                   />
                 </div>
@@ -586,7 +659,7 @@ export default function Home() {
                       <div aria-label={auction.image_url ? auction.title : "No auction image"} role="img" style={imageStyle(auction.image_url)} className="h-28 w-full bg-cover bg-center bg-no-repeat bg-slate-950/60" />
                       {auction.status === "upcoming" && (
                         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60 backdrop-blur-[1px]">
-                          <div className="hammer-hit flex flex-col items-center justify-center text-center">
+                          <div className="flex flex-col items-center justify-center text-center">
                             <span className="text-3xl">🔨</span>
                             <span className="mt-1 text-lg font-semibold text-amber-300">{getAuctionStartCountdown(auction)}</span>
                           </div>
@@ -629,7 +702,7 @@ export default function Home() {
             {endedAuctions.length > 0 && (
               <div className="rounded-3xl border border-white/10 bg-slate-900/80 p-4">
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm uppercase tracking-[0.2em] text-slate-400">Ended auctions</h3>
+                  <h3 className="text-sm uppercase tracking-[0.2em] text-slate-400">Ended listings</h3>
                   <span className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs text-rose-200">{endedAuctions.length}</span>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -670,7 +743,7 @@ export default function Home() {
                     </div>
                     {selectedAuction.status === "upcoming" && (
                       <div className="flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-                        <span className="hammer-hit text-2xl">🔨</span>
+                        <span className="text-2xl">🔨</span>
                         <span>Hammer drop in {getAuctionStartCountdown(selectedAuction)}s</span>
                       </div>
                     )}
@@ -710,14 +783,14 @@ export default function Home() {
                         {[1, 2, 3, 5].map((step) => {
                           const value = selectedAuction.current_bid + step * 1000;
                           return (
-                          <button
-                            key={value}
-                            type="button"
-                            onClick={() => placeBid(value, makeBidKey(`qid_${value}`))}
-                            className="flex-1 rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:border-cyan-500/40 hover:bg-cyan-500/10"
-                          >
-                            {formatMoney(value)}
-                          </button>
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => placeBid(value, makeBidKey(`qid_${value}`))}
+                              className="flex-1 rounded-xl border border-white/10 bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:border-cyan-500/40 hover:bg-cyan-500/10"
+                            >
+                              {formatMoney(value)}
+                            </button>
                           );
                         })}
                       </div>
@@ -733,10 +806,10 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => placeBid(Number(customBid) || selectedAuction.current_bid + 1000, makeBidKey("manual"))}
-                          disabled={isSubmitting || auctionEnded}
+                          disabled={isSubmitting || auctionEnded || !walletConnected}
                           className="rounded-xl bg-cyan-500 px-5 py-3 font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {auctionEnded ? "Auction ended" : isSubmitting ? "Processing..." : "Place Bid"}
+                          {auctionEnded ? "Auction ended" : !walletConnected ? "Connect wallet" : isSubmitting ? "Processing..." : "Place Bid"}
                         </button>
                       </div>
                     </div>
@@ -771,7 +844,7 @@ export default function Home() {
                     <span className="text-xs text-slate-500">#{index + 1}</span>
                   </div>
                 )) : (
-                  <p className="text-sm text-slate-500">Waiting for the first live bid.</p>
+                  <p className="text-sm text-slate-500">Waiting for the first wallet-verified bid.</p>
                 )}
               </div>
             </div>
@@ -781,13 +854,13 @@ export default function Home() {
               <div className="mt-4 space-y-3 text-sm text-slate-300">
                 {[
                   ["API", "Healthy"],
+                  ["Polygon", walletConnected ? "Connected" : "Awaiting wallet"],
                   ["PostgreSQL", "Connected"],
                   ["Redis", "Streaming"],
-                  ["WebSocket", "Stable"],
                 ].map(([label, value]) => (
-                  <div key={label} className="flex items-center justify-between rounded-xl border border-white/5 bg-slate-800/60 px-3 py-2">
-                    <span>{label}</span>
-                    <span className="text-emerald-300">{value}</span>
+                  <div key={String(label)} className="flex items-center justify-between rounded-xl border border-white/5 bg-slate-800/60 px-3 py-2">
+                    <span>{String(label)}</span>
+                    <span className="text-emerald-300">{String(value)}</span>
                   </div>
                 ))}
               </div>

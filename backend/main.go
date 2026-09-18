@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 type AuctionStatus string
@@ -53,6 +56,9 @@ type BidRequest struct {
 	Bidder         string `json:"bidder"`
 	Amount         int64  `json:"amount"`
 	IdempotencyKey string `json:"idempotency_key"`
+	WalletAddress  string `json:"wallet_address"`
+	WalletNetwork  string `json:"wallet_network"`
+	Signature      string `json:"signature"`
 }
 
 type CreateAuctionRequest struct {
@@ -304,12 +310,68 @@ func cloneAuction(a Auction) Auction {
 	return copyA
 }
 
+func normalizeWalletAddress(address string) string {
+	cleaned := strings.TrimSpace(address)
+	if cleaned == "" {
+		return ""
+	}
+	if strings.HasPrefix(cleaned, "0x") || strings.HasPrefix(cleaned, "0X") {
+		return strings.ToLower(cleaned)
+	}
+	return strings.ToLower("0x" + cleaned)
+}
+
+func maskWalletAddress(address string) string {
+	cleaned := normalizeWalletAddress(address)
+	if cleaned == "" {
+		return "Anonymous bidder"
+	}
+	if len(cleaned) <= 10 {
+		return cleaned
+	}
+	return cleaned[:6] + "..." + cleaned[len(cleaned)-4:]
+}
+
+func verifyWalletSignature(walletAddress string, signature string, message string) bool {
+	address := normalizeWalletAddress(walletAddress)
+	if address == "" || signature == "" {
+		return false
+	}
+
+	sigBytes := common.FromHex(signature)
+	if len(sigBytes) != 65 {
+		return false
+	}
+	if sigBytes[64] >= 27 {
+		sigBytes[64] -= 27
+	}
+
+	msgHash := crypto.Keccak256([]byte("\x19Ethereum Signed Message:\n" + strconv.Itoa(len(message)) + message))
+	pubKey, err := crypto.SigToPub(msgHash, sigBytes)
+	if err != nil || pubKey == nil {
+		return false
+	}
+
+	recovered := crypto.PubkeyToAddress(*pubKey).Hex()
+	return strings.EqualFold(recovered, address)
+}
+
 func (s *Store) placeBid(req BidRequest) (Acknowledge, error) {
 	if req.AuctionID <= 0 {
 		req.AuctionID = 1
 	}
 	if req.Amount <= 0 {
 		return Acknowledge{}, errors.New("amount must be positive")
+	}
+	if req.WalletAddress != "" {
+		if req.Signature == "" {
+			return Acknowledge{}, errors.New("wallet signature required")
+		}
+		msg := fmt.Sprintf("BidSync market approval:%d:%d:%s", req.AuctionID, req.Amount, req.IdempotencyKey)
+		if !verifyWalletSignature(req.WalletAddress, req.Signature, msg) {
+			return Acknowledge{}, errors.New("wallet signature validation failed")
+		}
+		req.Bidder = maskWalletAddress(req.WalletAddress)
 	}
 	if strings.TrimSpace(req.Bidder) == "" {
 		return Acknowledge{}, errors.New("bidder required")
