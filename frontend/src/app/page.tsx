@@ -130,6 +130,37 @@ const makeBidKey = (prefix: string) => {
 
 const imageStyle = (imageURL: string) => (imageURL ? { backgroundImage: `url("${imageURL}")` } : undefined);
 
+const walletOptions = [
+  {
+    id: "metamask",
+    label: "MetaMask",
+    icon: "🦊",
+    installUrl: "https://metamask.io/download/",
+    deepLink: "metamask://dapp?url=" + encodeURIComponent(typeof window !== "undefined" ? window.location.href : "https://example.com"),
+  },
+  {
+    id: "coinbase",
+    label: "Coinbase Wallet",
+    icon: "🔵",
+    installUrl: "https://www.coinbase.com/wallet",
+    deepLink: "https://go.cb-w.com/dapp?cb_url=" + encodeURIComponent(typeof window !== "undefined" ? window.location.href : "https://example.com"),
+  },
+  {
+    id: "trust",
+    label: "Trust Wallet",
+    icon: "🛡️",
+    installUrl: "https://trustwallet.com/download",
+    deepLink: "https://link.trustwallet.com/open_url?coin_id=60&url=" + encodeURIComponent(typeof window !== "undefined" ? window.location.href : "https://example.com"),
+  },
+  {
+    id: "walletconnect",
+    label: "WalletConnect",
+    icon: "🔗",
+    installUrl: "https://walletconnect.com/",
+    deepLink: "wc://",
+  },
+] as const;
+
 export default function Home() {
   const [auctions, setAuctions] = useState<Auction[]>([]);
   const [selectedId, setSelectedId] = useState<number>(1);
@@ -166,6 +197,7 @@ export default function Home() {
   const [walletAddress, setWalletAddress] = useState("");
   const [walletNetwork, setWalletNetwork] = useState(POLYGON_NETWORK);
   const [connectingWallet, setConnectingWallet] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
   const [anonymousName, setAnonymousName] = useState("Anonymous collector");
   const [walletBalance, setWalletBalance] = useState<bigint | null>(null);
   const selectedIdRef = useRef<number>(selectedId);
@@ -283,26 +315,58 @@ export default function Home() {
     reader.readAsDataURL(file);
   };
 
-  const connectWallet = async () => {
+  const connectWallet = async (selectedWalletId?: string) => {
     if (typeof window === "undefined") {
       setMessage({ type: "error", text: "Wallet connection is only available in the browser." });
       return;
     }
 
-    const ethereum = (window as any).ethereum;
-    if (!ethereum) {
-      setMessage({ type: "error", text: "MetaMask or another Polygon wallet is required." });
+    const selectedOption = walletOptions.find((option) => option.id === selectedWalletId) ?? walletOptions[0];
+    const ethereumCandidates = [
+      (window as any).ethereum,
+      (window as any).metamask,
+      (window as any).coinbaseWalletExtension,
+      (window as any).rabby,
+      (window as any).trustWallet,
+    ].filter(Boolean);
+
+    const findMatchingProvider = () => {
+      if (selectedWalletId === "walletconnect") return (window as any).ethereum || null;
+      if (selectedWalletId === "metamask") return (window as any).ethereum || (window as any).metamask || null;
+      if (selectedWalletId === "coinbase") return (window as any).coinbaseWalletExtension || null;
+      if (selectedWalletId === "trust") return (window as any).trustWallet || null;
+      return ethereumCandidates[0] ?? null;
+    };
+
+    const provider = findMatchingProvider();
+    if (!provider) {
+      setShowWalletModal(false);
+      const installUrl = selectedOption.installUrl;
+      if (selectedOption.deepLink && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent)) {
+        window.location.href = selectedOption.deepLink;
+        setMessage({
+          type: "info",
+          text: `Open ${selectedOption.label} on your device, then return to the site and approve the connection.`,
+        });
+        return;
+      }
+      window.open(installUrl, "_blank", "noopener,noreferrer");
+      setMessage({
+        type: "info",
+        text: `${selectedOption.label} was not detected. Install it or choose another supported wallet from the list.`,
+      });
       return;
     }
 
     try {
       setConnectingWallet(true);
-      const provider = new BrowserProvider(ethereum);
-      const accounts = await provider.send("eth_requestAccounts", []);
-      const signer = await provider.getSigner();
+      setShowWalletModal(false);
+      const browserProvider = new BrowserProvider(provider);
+      const accounts = await browserProvider.send("eth_requestAccounts", []);
+      const signer = await browserProvider.getSigner();
       const address = await signer.getAddress();
-      const network = await provider.getNetwork();
-      const balance = await provider.getBalance(address);
+      const network = await browserProvider.getNetwork();
+      const balance = await browserProvider.getBalance(address);
       setWalletAddress(address);
       setWalletNetwork(network?.name ? network.name : POLYGON_NETWORK);
       setWalletBalance(balance);
@@ -532,6 +596,46 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(34,211,238,0.18),_transparent_30%),linear-gradient(180deg,_#020817_0%,_#0f172a_100%)] text-white">
       <div className="mx-auto max-w-7xl px-4 py-6 lg:px-8">
+        {showWalletModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-lg rounded-[28px] border border-white/10 bg-slate-900 p-6 shadow-2xl shadow-cyan-500/10">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-cyan-300">Connect wallet</p>
+                  <h3 className="mt-2 text-2xl font-semibold text-white">Choose your supported wallet</h3>
+                </div>
+                <button type="button" onClick={() => setShowWalletModal(false)} className="rounded-full border border-white/10 bg-slate-800 px-3 py-1 text-sm text-slate-200 hover:bg-slate-700">
+                  Close
+                </button>
+              </div>
+
+              <div className="grid gap-3">
+                {walletOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => connectWallet(option.id)}
+                    className="flex items-center justify-between rounded-2xl border border-white/10 bg-slate-800/80 px-4 py-3 text-left transition hover:border-cyan-400/40 hover:bg-cyan-500/10"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-950 text-xl">{option.icon}</span>
+                      <div>
+                        <div className="font-medium text-white">{option.label}</div>
+                        <div className="text-xs text-slate-400">Polygon-compatible wallet</div>
+                      </div>
+                    </div>
+                    <span className="text-lg text-cyan-300">→</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-100">
+                No wallet installed? Choose a supported wallet above and install it, then come back and connect again.
+              </div>
+            </div>
+          </div>
+        )}
+
         <header className="mb-6 flex flex-col gap-4 rounded-[28px] border border-white/10 bg-slate-900/70 p-4 shadow-[0_24px_80px_rgba(14,165,233,0.12)] backdrop-blur md:flex-row md:items-center md:justify-between">
           <div>
             <p className="text-xs uppercase tracking-[0.4em] text-cyan-300">BidSync</p>
@@ -551,11 +655,11 @@ export default function Home() {
 
             <button
               type="button"
-              onClick={walletConnected ? disconnectWallet : connectWallet}
+              onClick={() => (walletConnected ? disconnectWallet() : setShowWalletModal(true))}
               disabled={connectingWallet}
               className="rounded-full bg-gradient-to-r from-cyan-400 to-emerald-400 px-4 py-2 font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {connectingWallet ? "Connecting..." : walletConnected ? "Wallet connected" : "Connect Polygon wallet"}
+              {connectingWallet ? "Connecting..." : walletConnected ? "Wallet connected" : "Connect wallet"}
             </button>
 
             {walletConnected && (
